@@ -1,0 +1,179 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["driverAdapters"]
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum Role {
+  USER
+  ADMIN
+}
+
+enum Gender {
+  MALE
+  FEMALE
+}
+
+enum LeaveCategory {
+  CUTI
+  IZIN_MENINGGALKAN
+}
+
+enum CalculationType {
+  WORKING_DAYS
+  CALENDAR_DAYS
+}
+
+enum LeaveStatus {
+  ON_PROGRESS
+  APPROVED
+  REJECTED
+  CANCELLED
+  DONE
+}
+
+enum QuotaHistoryType {
+  INITIAL_QUOTA
+  LEAVE_APPROVED
+  LEAVE_CANCELLED
+  LEAVE_REJECTED_AFTER_APPROVAL
+  LEAVE_DAYS_UPDATED
+  ADMIN_MANUAL_ADJUSTMENT
+  ANNUAL_RESET
+  BORROWED_QUOTA_DEDUCTION
+}
+
+model User {
+  id              String              @id @default(uuid())
+  nip             String?
+  workUnit        String?
+  name            String
+  email           String              @unique
+  password        String
+  role            Role                @default(USER)
+  gender          Gender              @default(MALE)
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+  deletedAt       DateTime?
+
+  quota           LeaveQuota?
+  userLeaveQuotas UserLeaveQuota[]
+  leaveRequests   LeaveRequest[]
+  quotaHistories  LeaveQuotaHistory[]
+
+  @@map("users")
+}
+
+model LeaveQuota {
+  id         String   @id @default(uuid())
+  userId     String   @unique
+  totalQuota Int      @default(12)
+  usedQuota  Int      @default(0)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("leave_quotas")
+}
+
+model UserLeaveQuota {
+  id            String    @id @default(uuid())
+  userId        String
+  leaveTypeId   String
+  year          Int       @default(2026)
+  totalQuota    Int       @default(12)
+  usedQuota     Int       @default(0)
+  borrowedQuota Int       @default(0)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  user          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  leaveType     LeaveType @relation(fields: [leaveTypeId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, leaveTypeId, year])
+  @@map("user_leave_quotas")
+}
+
+model LeaveType {
+  id              String          @id @default(uuid())
+  name            String
+  category        LeaveCategory   @default(CUTI)
+  defaultDays     Int?
+  daysDescription String?
+  calculationType CalculationType @default(WORKING_DAYS)
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  requestTypes    LeaveRequestType[]
+  userLeaveQuotas UserLeaveQuota[]
+
+  @@map("leave_types")
+}
+
+model LeaveRequest {
+  id             String             @id @default(uuid())
+  userId         String
+  startDate      DateTime
+  endDate        DateTime
+  totalDays      Int
+  reason         String
+  attachmentUrl  String?
+  status         LeaveStatus        @default(ON_PROGRESS)
+  adminNote      String?
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
+  deletedAt      DateTime?
+
+  user           User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  requestTypes   LeaveRequestType[]
+  quotaHistories LeaveQuotaHistory[]
+
+  @@map("leave_requests")
+}
+
+model LeaveRequestType {
+  id             String       @id @default(uuid())
+  leaveRequestId String
+  leaveTypeId    String
+  createdAt      DateTime     @default(now())
+
+  leaveRequest   LeaveRequest @relation(fields: [leaveRequestId], references: [id], onDelete: Cascade)
+  leaveType      LeaveType    @relation(fields: [leaveTypeId], references: [id], onDelete: Cascade)
+
+  @@unique([leaveRequestId, leaveTypeId])
+  @@map("leave_request_types")
+}
+
+model LeaveQuotaHistory {
+  id             String           @id @default(uuid())
+  userId         String
+  leaveRequestId String?
+  previousQuota  Int
+  changeAmount   Int
+  newQuota       Int
+  type           QuotaHistoryType
+  description    String?
+  createdAt      DateTime         @default(now())
+
+  user           User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  leaveRequest   LeaveRequest?    @relation(fields: [leaveRequestId], references: [id], onDelete: SetNull)
+
+  @@map("leave_quota_histories")
+}
+
+model NationalHoliday {
+  id        String   @id @default(uuid())
+  date      DateTime @unique
+  name      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("national_holidays")
+}

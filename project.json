@@ -1,0 +1,25 @@
+{
+  "id": "best-hcm",
+  "name": "Best HCM",
+  "description": "Next.js 16 HR management app with Prisma 7 and PostgreSQL.",
+  "type": "fullstack",
+  "enabled": true,
+  "frontend": {
+    "enabled": true,
+    "port": 3000,
+    "dir": ".",
+    "command": "npm run dev"
+  },
+  "backend": {
+    "enabled": false
+  },
+  "auth": {
+    "sso": false,
+    "mechanism": "JWT (jose) + bcryptjs"
+  },
+  "database": {
+    "engine": "postgres",
+    "service": "postgres:16 (docker-compose.yml)"
+  },
+  "docker": "docker-compose.yml"
+}
