@@ -1,0 +1,14 @@
+INSERT INTO public.leave_types (id,name,category,"defaultDays","daysDescription","calculationType","createdAt","updatedAt") VALUES
+	 ('40b55971-3beb-415a-855e-ffe310f5d31a','Cuti Tahunan','CUTI'::public."LeaveCategory",NULL,'Hari kerja','WORKING_DAYS'::public."CalculationType",'2026-08-12 06:21:24.062','2026-08-12 06:21:24.062'),
+	 ('eb3abd39-17ac-4857-8172-70676d51f6ad','Cuti Gugur Kandungan','CUTI'::public."LeaveCategory",45,'45 hari kalender','CALENDAR_DAYS'::public."CalculationType",'2026-08-12 06:21:24.066','2026-08-12 06:21:24.066'),
+	 ('3ad12774-3aa0-4148-bb53-df1a6a5fd768','Cuti Bersalin','CUTI'::public."LeaveCategory",90,'3 bulan kalender','CALENDAR_DAYS'::public."CalculationType",'2026-08-12 06:21:24.07','2026-08-12 06:21:24.07'),
+	 ('fd05977a-54ae-4aa6-a1d3-8187252b29b1','Cuti Bersalin dengan Keadaan Khusus','CUTI'::public."LeaveCategory",90,'3 bulan kalender','CALENDAR_DAYS'::public."CalculationType",'2026-08-12 06:21:24.074','2026-08-12 06:21:24.074'),
+	 ('1e3ea56c-12e2-405e-acf8-2e4449f425ce','Cuti Melaksanakan Ibadah Wajib Keagamaan','CUTI'::public."LeaveCategory",NULL,'Sesuai ketentuan Agama/Pemerintah','CALENDAR_DAYS'::public."CalculationType",'2026-08-12 06:21:24.078','2026-08-12 06:21:24.078'),
+	 ('486a65d0-3301-46e0-9253-f4327bfde317','Pinjam Cuti','CUTI'::public."LeaveCategory",NULL,'Hari kerja','WORKING_DAYS'::public."CalculationType",'2026-08-12 06:21:24.081','2026-08-12 06:21:24.081'),
+	 ('0787d7cc-d627-4369-a472-3c85f8f77aad','Pernikahan Pekerja','IZIN_MENINGGALKAN'::public."LeaveCategory",3,'3 hari kerja','WORKING_DAYS'::public."CalculationType",'2026-08-12 06:21:24.085','2026-08-12 06:21:24.085'),
+	 ('a462f79f-79ad-4e2c-a137-1423dd075357','Pernikahan Anak','IZIN_MENINGGALKAN'::public."LeaveCategory",2,'2 hari kerja','WORKING_DAYS'::public."CalculationType",'2026-08-12 06:21:24.088','2026-08-12 06:21:24.088'),
+	 ('43f6c798-1c04-4502-b7d9-0562c22431c2','Khitanan/Pembaptisan Anak','IZIN_MENINGGALKAN'::public."LeaveCategory",2,'2 hari kerja','WORKING_DAYS'::public."CalculationType",'2026-08-12 06:21:24.092','2026-08-12 06:21:24.092'),
+	 ('5344d7c2-6c9a-4066-be23-29b0449a0e0e','Istri Melahirkan/Keguguran','IZIN_MENINGGALKAN'::public."LeaveCategory",2,'2 hari kerja','WORKING_DAYS'::public."CalculationType",'2026-08-12 06:21:24.095','2026-08-12 06:21:24.095');
+INSERT INTO public.leave_types (id,name,category,"defaultDays","daysDescription","calculationType","createdAt","updatedAt") VALUES
+	 ('ad4b80b1-bf02-41b9-80c6-c016cf40d7ae','Keluarga Inti Meninggal (Suami/Istri/Orang Tua/Mertua/Anak)','IZIN_MENINGGALKAN'::public."LeaveCategory",2,'2 hari kerja','WORKING_DAYS'::public."CalculationType",'2026-08-12 06:21:24.098','2026-08-12 06:21:24.098'),
+	 ('cbd14fde-a5c2-4ead-8c37-e79bdd082e6c','Anggota Keluarga dalam satu rumah meninggal','IZIN_MENINGGALKAN'::public."LeaveCategory",1,'1 hari kerja','WORKING_DAYS'::public."CalculationType",'2026-08-12 06:21:24.101','2026-08-12 06:21:24.101');
