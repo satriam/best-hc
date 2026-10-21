@@ -12,12 +12,13 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 
 ## Environment terpisah (WAJIB)
 
-| Environment | Port | Database | Env file |
-|---|---|---|---|
-| Development | **3005** | `besthcm_dev` | `.env.development` |
-| Production | **3000** | `besthcm_prod` | `.env.production` |
+| Environment | App port | Container | DB port | Database | Env file |
+|---|---|---|---|---|---|
+| Development | **3005** | `postgres_dev` | **5433** | `besthcm_dev` | `.env.development` |
+| Production | **3000** | `postgres` | **5432** | `besthcm_prod` | `.env.production` |
 
-- **Jangan pernah** menjalankan/mengubah server production (port 3000) saat mengerjakan task dev.
+- **Dua container PostgreSQL terpisah** — jangan dicampur. `postgres_dev` (generik, dipakai bersama project lain) untuk development.
+- **Jangan pernah** menjalankan/mengubah server production (port 3000) atau container `postgres` saat mengerjakan task dev.
 - Dev selalu **mirror production**: `npm run db:mirror` (drop + restore dev dari prod). Cek dengan `npm run db:status`.
 - `.env` hanya nilai shared (`AUTH_SECRET`). `DATABASE_URL` **wajib** di `.env.development` / `.env.production`, jangan di `.env`.
 - Port dev **3005** — jangan pakai 3000 (produksi).

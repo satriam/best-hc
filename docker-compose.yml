@@ -1,26 +1,36 @@
 version: '3.8'
 
-# Best HCM — PostgreSQL.
-# Dua database terpisah:
-#   besthcm_prod  -> dipakai `npm start`   (port 3000)
-#   besthcm_dev   -> dipakai `npm run dev` (port 3005), isinya mirror production
-# Database dev dibuat otomatis lewat init script saat volume masih kosong.
-# Untuk instalasi yang sudah berjalan, buat manual (lihat README bagian Environment).
+# ============================================================
+# Best HCM — PostgreSQL DEVELOPMENT
+# ============================================================
+# File ini HANYA mengelola container development.
+#
+#   postgres      port 5432   PRODUCTION  -> database besthcm_prod
+#   postgres_dev  port 5433   DEVELOPMENT -> database besthcm_dev (mirror production)
+#
+# Container `postgres` (produksi) dipakai bersama banyak project lain di mesin ini,
+# jadi SENGAJA tidak dideklarasikan di sini — jangan sampai ter-recreate.
+#
+# Pakai:
+#   docker compose up -d        # nyalakan postgres_dev
+#   docker compose logs -f      # lihat log
+# ============================================================
 
 services:
-  postgres:
+  postgres_dev:
     image: postgres:16-alpine
-    container_name: besthcm-postgres
-    restart: always
+    container_name: postgres_dev
+    restart: unless-stopped
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: besthcm_prod
+      POSTGRES_DB: besthcm_dev
     ports:
-      - "5432:5432"
+      - "5433:5432"
     volumes:
-      - postgres_data:/var/lib/postgresql/data
-      - ./docker/init-db.sql:/docker-entrypoint-initdb.d/01-init-db.sql:ro
+      - postgres_dev_data:/var/lib/postgresql/data
 
 volumes:
-  postgres_data:
+  postgres_dev_data:
+    external: true
+    name: besthcm_dev_pgdata

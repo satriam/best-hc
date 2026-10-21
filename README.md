@@ -84,23 +84,25 @@ cp .env.example .env.production    # lalu isi DATABASE_URL ke besthcm_prod
 ## Database Setup
 
 - **Engine**: PostgreSQL 16
-- **Databases**: `besthcm_prod` (produksi) dan `besthcm_dev` (development, mirror produksi)
+- **Dua container terpisah**:
 
-### Buat database (instalasi baru)
-```bash
-docker compose up -d          # besthcm_prod dibuat otomatis, besthcm_dev lewat init script
-```
+| Container | Port | Environment | Database |
+|---|---|---|---|
+| `postgres` | **5432** | Production | `besthcm_prod` |
+| `postgres_dev` | **5433** | Development | `besthcm_dev` (mirror production) |
 
-Untuk instalasi yang sudah berjalan (container postgres dipakai bersama project lain, **jangan** di-recreate):
+> Container `postgres` (produksi) dipakai bersama banyak project lain — **jangan** di-recreate
+> atau `docker compose down -v`. Compose di repo ini hanya mengelola `postgres_dev`.
+
+### Nyalakan database dev
 ```bash
-docker exec postgres psql -U postgres -d postgres -c "CREATE DATABASE besthcm_dev;"
-npm run db:mirror             # isi dev dengan salinan data production
+docker compose up -d          # membuat/menyalakan container postgres_dev (port 5433)
 ```
 
 ### Perintah database
 
 ```bash
-npm run db:status    # bandingkan prod vs dev (jumlah baris + cek mirror)
+npm run db:status    # bandingkan prod (5432) vs dev (5433) + cek mirror
 npm run db:mirror    # segarkan dev dari prod (dev di-DROP lalu di-restore)
 npx prisma migrate dev        # buat/terapkan migrasi (di DB dev)
 npx prisma generate           # regenerate Prisma Client
