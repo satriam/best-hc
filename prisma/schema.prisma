@@ -66,6 +66,8 @@ model User {
   userLeaveQuotas UserLeaveQuota[]
   leaveRequests   LeaveRequest[]
   quotaHistories  LeaveQuotaHistory[]
+  spklRequests    Spkl[]              @relation("SpklRequester")
+  spklSigners     SpklSigner[]
 
   @@map("users")
 }
@@ -207,4 +209,102 @@ model NationalHoliday {
   updatedAt DateTime @updatedAt
 
   @@map("national_holidays")
+}
+
+// ---------------------------------------------------------------------------
+// Modul SPKL (Surat Perintah Kerja Lembur)
+// ---------------------------------------------------------------------------
+
+enum SpklSignerRole {
+  PIC // Yang Menugaskan
+  APPROVER // Yang Menyetujui
+}
+
+enum SpklType {
+  WORKDAY // Lembur Hari Kerja
+  OUTSIDE_WORKDAY // Lembur Diluar Hari Kerja
+  PUBLIC_HOLIDAY // Lembur Hari Libur Resmi
+}
+
+enum SpklStatus {
+  DRAFT
+  ON_PROGRESS
+  APPROVED
+  REJECTED
+  CANCELLED
+}
+
+/// Master penanda tangan SPKL (PIC = Yang Menugaskan, APPROVER = Yang Menyetujui).
+/// Bisa berdiri sendiri (userId null) karena penanda tangan belum tentu punya akun.
+model SpklSigner {
+  id         String         @id @default(uuid())
+  role       SpklSignerRole
+  userId     String?
+  name       String
+  nip        String?
+  position   String?
+  department String?
+  workUnit   String?
+  isActive   Boolean        @default(true)
+  isDefault  Boolean        @default(false)
+  sortOrder  Int            @default(0)
+  createdAt  DateTime       @default(now())
+  updatedAt  DateTime       @updatedAt
+
+  user          User?  @relation(fields: [userId], references: [id], onDelete: SetNull)
+  assignedSpkls Spkl[] @relation("SpklPic")
+  approvedSpkls Spkl[] @relation("SpklApprover")
+
+  @@index([role, isActive])
+  @@map("spkl_signers")
+}
+
+model Spkl {
+  id           String     @id @default(uuid())
+  number       String     @unique
+  requesterId  String
+  picId        String
+  approverId   String
+  type         SpklType   @default(WORKDAY)
+  workUnit     String?
+  status       SpklStatus @default(DRAFT)
+  notes        String?
+  totalHours   Decimal    @default(0) @db.Decimal(7, 2)
+  approvedAt   DateTime?
+  approvedById String?
+  rejectedNote String?
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+  deletedAt    DateTime?
+
+  requester User        @relation("SpklRequester", fields: [requesterId], references: [id], onDelete: Cascade)
+  pic       SpklSigner  @relation("SpklPic", fields: [picId], references: [id])
+  approver  SpklSigner  @relation("SpklApprover", fields: [approverId], references: [id])
+  items     SpklItem[]
+
+  @@index([requesterId, status])
+  @@index([status])
+  @@map("spkls")
+}
+
+model SpklItem {
+  id              String   @id @default(uuid())
+  spklId          String
+  order           Int      @default(0)
+  workerNik       String
+  workerName      String
+  workerPosition  String?
+  company         String?  @default("PT Bukit Energi Servis Terpadu")
+  taskDescription String
+  workDate        DateTime
+  startTime       String
+  endTime         String
+  hours           Decimal  @db.Decimal(5, 2)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  spkl Spkl @relation(fields: [spklId], references: [id], onDelete: Cascade)
+
+  @@index([spklId])
+  @@map("spkl_items")
 }
