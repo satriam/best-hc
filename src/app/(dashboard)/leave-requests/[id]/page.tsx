@@ -78,6 +78,25 @@ interface LeaveRequestDetail {
       category?: string;
     } | null;
   }>;
+  /**
+   * Rincian kuota akurat dari backend (dihitung dari tabel `leave_quota_histories`,
+   * bukan tebakan frontend). Sumber utama blok "Rincian Kuota Pengajuan Ini".
+   * Opsional supaya tetap aman bila API lama / data lama tidak mengirimnya.
+   */
+  quotaInfo?: {
+    perType: Array<{
+      leaveTypeId: string;
+      leaveTypeName: string;
+      daysRequested: number;
+      previousRemaining: number | null;
+      usedByThisRequest: number;
+      remainingAfter: number | null;
+      currentRemaining: number | null;
+    }>;
+    totalDaysRequested: number;
+    totalUsedByThisRequest: number;
+    statusAffectsQuota: boolean;
+  } | null;
 }
 
 interface HolidayDetail {
@@ -383,38 +402,91 @@ export default function LeaveRequestDetailPage({
     daysByType.set(row.typeId, (daysByType.get(row.typeId) ?? 0) + row.days);
   });
 
-  // Rincian kuota SESUAI JENIS CUTI pengajuan (bukan LeaveQuota generik "Cuti Tahunan").
-  // - APPROVED/DONE: usedQuota sudah termasuk pengajuan ini, sehingga sisa SEBELUM = sisa saat ini + hari jenis itu.
-  // - ON_PROGRESS : kuota belum dipotong, sisa SESUDAH = proyeksi setelah pengajuan disetujui.
-  // - REJECTED/CANCELLED: kuota tidak terpotong, sisa SESUDAH = sisa SEBELUM.
+  // Rincian kuota SESUAI JENIS CUTI pengajuan.
+  //
+  // SUMBER UTAMA: `requestDetail.quotaInfo` dari GET /api/leave-requests/[id].
+  // Backend menghitungnya dari tabel `leave_quota_histories` (snapshot per pengajuan),
+  // jadi tetap benar walaupun ada pemotongan LAIN setelah pengajuan ini.
+  // JANGAN hitung ulang angka kuota di frontend.
+  //
+  // Fallback (hanya bila quotaInfo tidak dikirim API lama) memakai perhitungan kasar
+  // lama — perhatikan itu menganggap pengajuan ini pemotongan terakhir.
+  const quotaInfo = requestDetail.quotaInfo ?? null;
+  const quotaInfoByType = new Map(
+    (quotaInfo?.perType ?? []).map((info) => [info.leaveTypeId, info] as const)
+  );
+  // true = pengajuan ini benar-benar memotong kuota (APPROVED/DONE + ada history).
+  const quotaAffected = !!quotaInfo?.statusAffectsQuota;
+
   const isQuotaCut =
     requestDetail.status === 'APPROVED' || requestDetail.status === 'DONE';
   const isQuotaPending = requestDetail.status === 'ON_PROGRESS';
+  const isQuotaVoid =
+    requestDetail.status === 'REJECTED' || requestDetail.status === 'CANCELLED';
 
   const quotaRows = (requestDetail.requestTypes ?? []).map((rt) => {
     const quota = typeQuotas[rt.leaveType.id];
+    const info = quotaInfoByType.get(rt.leaveType.id);
     const isUnlimited = !!quota && quota.totalQuota >= 999;
-    const remainingNow = quota ? quota.totalQuota - quota.usedQuota : null;
     // Hari jenis cuti ini pada pengajuan (agregat semua rentang dengan jenis yang sama).
     const daysForType = hasSegments
       ? daysByType.get(rt.leaveType.id) ?? 0
       : requestDetail.totalDays;
-    const cutDays = isQuotaCut ? daysForType : 0;
-    const projectedDays = isQuotaCut || isQuotaPending ? daysForType : 0;
-    const remainingBefore = remainingNow === null ? null : remainingNow + cutDays;
-    const remainingAfter = remainingBefore === null ? null : remainingBefore - projectedDays;
+
+    let previousRemaining: number | null;
+    let remainingAfter: number | null;
+    /** null = pengajuan ini tidak memotong kuota (tampil "—"). */
+    let usedByThisRequest: number | null;
+    let currentRemaining: number | null;
+    /** true = "sisa sesudah" masih proyeksi (ON_PROGRESS). */
+    let isProjected = false;
+
+    if (info) {
+      // ---- Jalur utama: angka dari backend (quotaInfo), tanpa hitung ulang ----
+      previousRemaining = info.previousRemaining;
+      currentRemaining = info.currentRemaining;
+      usedByThisRequest = quotaAffected ? info.usedByThisRequest : null;
+
+      if (quotaAffected) {
+        remainingAfter = info.remainingAfter;
+      } else if (isQuotaPending) {
+        // Kuota belum dipotong: tampilkan proyeksi bila pengajuan disetujui.
+        const base = info.previousRemaining;
+        const cut = info.daysRequested || daysForType;
+        remainingAfter = base === null ? null : base - cut;
+        isProjected = true;
+      } else {
+        // REJECTED / CANCELLED: kuota tidak terpotong → sisa sesudah = sisa sebelum.
+        remainingAfter = info.previousRemaining;
+      }
+    } else {
+      // ---- FALLBACK (hanya bila API tidak mengirim quotaInfo) ----
+      // Perhitungan kasar: menganggap pengajuan ini pemotongan TERAKHIR.
+      const remainingNow = quota ? quota.totalQuota - quota.usedQuota : null;
+      const cutDays = isQuotaCut ? daysForType : 0;
+      const projectedDays = isQuotaCut || isQuotaPending ? daysForType : 0;
+      previousRemaining = remainingNow === null ? null : remainingNow + cutDays;
+      remainingAfter = previousRemaining === null ? null : previousRemaining - projectedDays;
+      usedByThisRequest = cutDays > 0 ? daysForType : null;
+      currentRemaining = remainingNow;
+      isProjected = isQuotaPending;
+    }
+
+    const hasQuota = !!quota || !!info;
 
     let note = '';
-    if (!quota) {
+    if (!hasQuota) {
       note = 'Data kuota jenis cuti ini belum tersedia pada tahun pengajuan.';
     } else if (isUnlimited) {
       note = 'Jenis cuti ini tidak dibatasi kuota.';
-    } else if (requestDetail.status === 'REJECTED' || requestDetail.status === 'CANCELLED') {
+    } else if (isQuotaVoid) {
       note = `Status ${requestDetail.status}: kuota tidak terpotong, sisa sesudah sama dengan sisa sebelum.`;
     } else if (isQuotaPending) {
       note = `Status ON_PROGRESS: kuota belum dipotong. Jika pengajuan disetujui, sisa menjadi ${remainingAfter} hari.`;
+    } else if (usedByThisRequest !== null) {
+      note = `Status ${requestDetail.status}: kuota sudah terpotong ${usedByThisRequest} hari untuk pengajuan ini.`;
     } else {
-      note = `Status ${requestDetail.status}: kuota sudah terpotong ${daysForType} hari untuk pengajuan ini.`;
+      note = `Status ${requestDetail.status}: kuota belum dipotong untuk pengajuan ini.`;
     }
 
     return {
@@ -422,11 +494,14 @@ export default function LeaveRequestDetailPage({
       name: rt.leaveType.name,
       days: daysForType,
       totalQuota: quota ? quota.totalQuota : null,
-      usedQuota: quota ? quota.usedQuota : null,
-      remainingBefore,
+      /** Terpakai DI PENGAJUAN INI (bukan usedQuota global). */
+      usedByThisRequest,
+      remainingBefore: previousRemaining,
       remainingAfter,
+      currentRemaining,
+      isProjected,
       isUnlimited,
-      hasQuota: !!quota,
+      hasQuota,
       isOver: remainingAfter !== null && !isUnlimited && remainingAfter < 0,
       note,
     };
@@ -615,7 +690,7 @@ export default function LeaveRequestDetailPage({
 
               <div>
                 <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider block">
-                  Sisa Kuota Sesuai Jenis Cuti
+                  Sisa Kuota Saat Ini Sesuai Jenis Cuti
                 </span>
                 {quotaRows.length === 0 ? (
                   <p className="text-sm font-black text-slate-500 mt-1">Sesuai ketentuan</p>
@@ -624,9 +699,9 @@ export default function LeaveRequestDetailPage({
                     <p key={row.typeId} className="text-sm font-black text-indigo-900 mt-1">
                       {row.isUnlimited
                         ? 'Tidak dibatasi'
-                        : row.hasQuota
-                        ? `${row.remainingBefore} Hari`
-                        : 'Belum ada data'}
+                        : !row.hasQuota || row.currentRemaining === null
+                        ? 'Belum ada data'
+                        : `${row.currentRemaining} Hari`}
                       <span className="text-[11px] font-semibold text-slate-500"> • {row.name}</span>
                     </p>
                   ))
@@ -753,9 +828,10 @@ export default function LeaveRequestDetailPage({
                   Jenis cuti pengajuan ini belum tercatat.
                 </p>
               ) : (
-                quotaRows.map((row) => (
+                quotaRows.map((row, rowIdx) => (
                   <div
                     key={row.typeId}
+                    data-testid={`quota-detail-${rowIdx}`}
                     className={`rounded-xl border p-3 space-y-2 ${
                       row.isOver ? 'bg-rose-50/80 border-rose-300' : 'bg-slate-50/70 border-slate-200'
                     }`}
@@ -775,14 +851,19 @@ export default function LeaveRequestDetailPage({
                     <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
                       <div className="p-2.5 rounded-lg bg-white border border-slate-200">
                         <span className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider">
-                          Kuota dipakai
+                          Terpakai di pengajuan ini
                         </span>
-                        <span className="block text-sm font-black text-slate-800">
+                        <span
+                          data-testid={`quota-used-${rowIdx}`}
+                          className="block text-sm font-black text-slate-800"
+                        >
                           {row.isUnlimited
                             ? 'Tidak dibatasi'
-                            : row.hasQuota
-                            ? `${row.usedQuota} Hari`
-                            : '-'}
+                            : !row.hasQuota
+                            ? '-'
+                            : row.usedByThisRequest === null
+                            ? '—'
+                            : `${row.usedByThisRequest} Hari`}
                         </span>
                       </div>
 
@@ -790,7 +871,10 @@ export default function LeaveRequestDetailPage({
                         <span className="block text-[10px] font-bold text-indigo-700 uppercase tracking-wider">
                           Sisa sebelum
                         </span>
-                        <span className="block text-sm font-black text-indigo-900">
+                        <span
+                          data-testid={`quota-before-${rowIdx}`}
+                          className="block text-sm font-black text-indigo-900"
+                        >
                           {row.isUnlimited
                             ? 'Tidak dibatasi'
                             : row.hasQuota
@@ -819,6 +903,7 @@ export default function LeaveRequestDetailPage({
                           Sisa sesudah
                         </span>
                         <span
+                          data-testid={`quota-after-${rowIdx}`}
                           className={`block text-sm font-black ${
                             row.isOver ? 'text-rose-700' : 'text-emerald-900'
                           }`}
@@ -829,6 +914,19 @@ export default function LeaveRequestDetailPage({
                             ? `${row.remainingAfter} Hari`
                             : '-'}
                         </span>
+                        {row.isProjected && !row.isUnlimited && row.hasQuota && (
+                          <span className="block text-[10px] text-slate-500 font-semibold">
+                            proyeksi bila disetujui
+                          </span>
+                        )}
+                        {!row.isUnlimited && row.hasQuota && row.currentRemaining !== null && (
+                          <span
+                            data-testid={`quota-current-${rowIdx}`}
+                            className="block text-[10px] text-slate-600 font-bold"
+                          >
+                            Saldo saat ini: {row.currentRemaining} hari
+                          </span>
+                        )}
                         {row.isOver && (
                           <span className="block text-[10px] text-rose-700 font-extrabold">
                             ⚠ Kuota tidak cukup
@@ -1111,33 +1209,23 @@ export default function LeaveRequestDetailPage({
           const cutiRowsHtml = cutiRows.map(rowHtml).join('');
           const izinRowsHtml = izinRows.map(rowHtml).join('');
 
-          // ---- RINCIAN KUOTA PER JENIS CUTI (tabel UserLeaveQuota, bukan LeaveQuota generik) ----
-          // - APPROVED/DONE      : usedQuota sudah memuat pengajuan ini -> kuota terpakai SEBELUM = usedQuota - hari jenis itu.
-          // - ON_PROGRESS        : kuota belum dipotong -> sisa sesudah = proyeksi (sisa sebelum - hari diajukan).
-          // - REJECTED/CANCELLED : kuota tidak terpotong -> sisa sesudah = sisa sebelum.
-          const isCut = requestDetail.status === 'APPROVED' || requestDetail.status === 'DONE';
+          // ---- RINCIAN KUOTA PER JENIS CUTI ----
+          // Memakai `quotaRows` yang SAMA dengan tampilan layar, yang bersumber dari
+          // `requestDetail.quotaInfo` (dihitung backend dari `leave_quota_histories`).
+          // Tidak ada perhitungan manual di jalur cetak supaya angka cetak = angka layar.
           const isVoid = requestDetail.status === 'REJECTED' || requestDetail.status === 'CANCELLED';
 
-          // Satu baris per jenis cuti yang dipakai, dengan total hari jenis itu.
-          const quotaPrint = usedTypes.map((used) => {
-            const q = typeQuotas[used.typeId];
-            const days = used.days;
-            const unlimited = !!q && q.totalQuota >= 999;
-            const usedBefore = q ? (isCut ? q.usedQuota - days : q.usedQuota) : null;
-            const before = q && usedBefore !== null ? q.totalQuota - usedBefore : null;
-            const after = before === null ? null : isVoid ? before : before - days;
-
-            return {
-              name: used.name,
-              days,
-              total: q ? q.totalQuota : null,
-              usedBefore,
-              before,
-              after,
-              unlimited,
-              missing: !q,
-            };
-          });
+          const quotaPrint = quotaRows.map((row) => ({
+            name: row.name,
+            days: row.days,
+            total: row.totalQuota,
+            usedBefore: row.usedByThisRequest,
+            before: row.remainingBefore,
+            after: row.remainingAfter,
+            projected: row.isProjected,
+            unlimited: row.isUnlimited,
+            missing: !row.hasQuota,
+          }));
 
           const quotaCell = `${c}padding:2px 5px;vertical-align:middle;font-size:9.5px;`;
           const quotaHari = (v: number | null) => (v === null ? 'Sesuai Ketentuan' : `${v} hari`);
@@ -1150,12 +1238,20 @@ export default function LeaveRequestDetailPage({
                 : row.unlimited
                 ? 'Tidak dibatasi'
                 : `${row.total} hari`;
-              const usedTxt = noQuota ? totalTxt : quotaHari(row.usedBefore);
+              // "Kuota Terpakai" = hari yang dipotong OLEH pengajuan ini (usedByThisRequest),
+              // bukan usedQuota global pemohon. "—" bila pengajuan tidak memotong kuota.
+              const usedTxt = noQuota
+                ? totalTxt
+                : row.usedBefore === null
+                ? '—'
+                : `${row.usedBefore} hari`;
               const beforeTxt = noQuota ? totalTxt : quotaHari(row.before);
               const isOver = !noQuota && row.after !== null && row.after < 0;
               const afterTxt = noQuota
                 ? totalTxt
-                : `${quotaHari(row.after)}${isOver ? ' (melebihi kuota)' : ''}`;
+                : `${quotaHari(row.after)}${row.projected ? ' (proyeksi)' : ''}${
+                    isOver ? ' (melebihi kuota)' : ''
+                  }`;
 
               return `<tr style="height:16px">
           <td style="${quotaCell}font-weight:bold">${esc(row.name)}</td>
@@ -1238,7 +1334,7 @@ export default function LeaveRequestDetailPage({
         <tr>
           <th style="${sub}text-align:left;width:36%;">Jenis Cuti</th>
           <th style="${sub}width:13%;">Jumlah Hari</th>
-          <th style="${sub}width:17%;">Kuota Terpakai (sebelum)</th>
+          <th style="${sub}width:17%;">Kuota Terpakai (Pengajuan Ini)</th>
           <th style="${sub}width:15%;">Sisa Sebelum</th>
           <th style="${sub}width:19%;">Sisa Sesudah</th>
         </tr>
