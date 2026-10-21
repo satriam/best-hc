@@ -1,8 +1,34 @@
 import { prisma } from '@/lib/db';
 import bcrypt from 'bcryptjs';
+import { Prisma, QuotaHistoryType } from '@prisma/client';
 import { CreateUserInput, UpdateUserInput } from '@/schemas/user.schema';
-import { QuotaHistoryType } from '@prisma/client';
 import { ensureUserLeaveQuotas } from '@/services/quota.service';
+
+/**
+ * Kolom `users` yang aman dikirim ke klien.
+ *
+ * `password` (hash bcrypt) SENGAJA tidak ada di sini: dipakai allow-list `select`,
+ * bukan blacklist, supaya kolom sensitif baru di kemudian hari tidak otomatis ikut
+ * terkirim lewat respons API.
+ */
+const publicUserSelect = {
+  id: true,
+  nip: true,
+  workUnit: true,
+  name: true,
+  email: true,
+  role: true,
+  gender: true,
+  createdAt: true,
+  updatedAt: true,
+  deletedAt: true,
+} as const satisfies Prisma.UserSelect;
+
+/** Sama seperti `publicUserSelect` + relasi `quota` (dipakai `createUser`). */
+const publicUserWithQuotaSelect = {
+  ...publicUserSelect,
+  quota: true,
+} as const satisfies Prisma.UserSelect;
 
 export async function getAllUsers() {
   const users = await prisma.user.findMany({
@@ -79,7 +105,7 @@ export async function createUser(input: CreateUserInput) {
           },
         },
       },
-      include: { quota: true },
+      select: publicUserWithQuotaSelect,
     });
 
     await tx.leaveQuotaHistory.create({
@@ -112,7 +138,7 @@ export async function updateUser(id: string, input: UpdateUserInput) {
     if (existing) throw new Error('Email sudah digunakan user lain');
   }
 
-  const dataToUpdate: any = {};
+  const dataToUpdate: Prisma.UserUpdateInput = {};
   if (input.nip !== undefined) dataToUpdate.nip = input.nip || null;
   if (input.workUnit !== undefined) dataToUpdate.workUnit = input.workUnit || null;
   if (input.name) dataToUpdate.name = input.name;
@@ -127,6 +153,7 @@ export async function updateUser(id: string, input: UpdateUserInput) {
     const updated = await tx.user.update({
       where: { id },
       data: dataToUpdate,
+      select: publicUserSelect,
     });
 
     if (input.totalQuota !== undefined && user.quota) {
@@ -168,5 +195,6 @@ export async function deleteUser(id: string) {
 
   return prisma.user.delete({
     where: { id },
+    select: publicUserSelect,
   });
 }

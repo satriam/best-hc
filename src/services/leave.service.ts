@@ -567,7 +567,10 @@ export async function updateLeaveStatus(
     const request = await tx.leaveRequest.findUnique({
       where: { id: requestId },
       include: {
-        user: { include: { quota: true } },
+        // Hanya `quota` yang dibutuhkan di sini. Jangan pakai `include` penuh: objek
+        // `user` hasil early-return di bawah ikut dikirim ke klien, dan `include` penuh
+        // memuat hash password.
+        user: { select: { quota: true } },
         requestTypes: { include: { leaveType: true } },
         segments: { include: { leaveType: true }, orderBy: { order: 'asc' } },
       },
