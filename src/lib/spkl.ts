@@ -62,11 +62,16 @@ export function computeTotal(items: { hours: number | string }[]): number {
   return Math.round(total * 100) / 100;
 }
 
+/** Normalisasi satuan kerja untuk nomor SPKL: `fmwr ` → `FMWR`. */
+export function normalizeWorkUnit(workUnit: string | null | undefined): string {
+  return (workUnit || 'PUSAT').trim().toUpperCase().replace(/\s+/g, '') || 'PUSAT';
+}
+
 /**
  * Nomor SPKL: `<urut 3 digit>/SPKL/<workUnit>/<tahun>` — contoh `001/SPKL/FMWR/2026`.
  */
 export function formatSpklNumber(sequence: number, workUnit: string | null | undefined, year: number): string {
-  const unit = (workUnit || 'PUSAT').trim().toUpperCase().replace(/\s+/g, '') || 'PUSAT';
+  const unit = normalizeWorkUnit(workUnit);
   const seq = String(Math.max(1, Math.trunc(sequence))).padStart(3, '0');
   return `${seq}/SPKL/${unit}/${year}`;
 }
