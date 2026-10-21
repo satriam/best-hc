@@ -2,7 +2,106 @@ import { prisma } from '@/lib/db';
 import { LeaveStatus, QuotaHistoryType, CalculationType } from '@prisma/client';
 import { calculateLeaveDays } from '@/lib/calculation';
 import { getHolidayDatesSet } from '@/services/holiday.service';
-import { CreateLeaveRequestInput } from '@/schemas/leave.schema';
+import { CreateLeaveRequestPayload, formatDateId } from '@/schemas/leave.schema';
+
+/**
+ * Segment yang sudah dinormalisasi (tanggal sudah berupa Date).
+ * Satu pengajuan cuti bisa berisi beberapa segment, tiap segment punya jenis cuti sendiri.
+ */
+export interface NormalizedSegment {
+  leaveTypeId: string;
+  startDate: Date;
+  endDate: Date;
+  order: number;
+}
+
+/** Segment hasil hitung: ditambah total hari & data jenis cutinya. */
+export interface ComputedSegment extends NormalizedSegment {
+  totalDays: number;
+}
+
+function unique<T>(values: T[]): T[] {
+  return Array.from(new Set(values));
+}
+
+/**
+ * Bangun daftar segment dari input pengajuan.
+ * - Bentuk baru: `segments[]` dipakai apa adanya.
+ * - Bentuk lama: `leaveTypeIds` + `startDate`/`endDate` dibangun menjadi SATU segment
+ *   otomatis (jenis cuti pertama) agar klien lama tetap jalan.
+ */
+export function buildSegmentsFromInput(input: CreateLeaveRequestPayload): NormalizedSegment[] {
+  const segments = input.segments ?? [];
+
+  if (segments.length > 0) {
+    return segments.map((segment, index) => ({
+      leaveTypeId: segment.leaveTypeId,
+      startDate: new Date(segment.startDate),
+      endDate: new Date(segment.endDate),
+      order: index,
+    }));
+  }
+
+  if (!input.leaveTypeIds?.length || !input.startDate || !input.endDate) {
+    throw new Error('Rentang tanggal cuti wajib diisi');
+  }
+
+  return [
+    {
+      leaveTypeId: input.leaveTypeIds[0],
+      startDate: new Date(input.startDate),
+      endDate: new Date(input.endDate),
+      order: 0,
+    },
+  ];
+}
+
+/**
+ * Hitung total hari tiap segment memakai `calculateLeaveDays()` dengan
+ * `calculationType` jenis cuti segment tersebut + daftar hari libur.
+ */
+export function computeSegments(
+  segments: NormalizedSegment[],
+  leaveTypeMap: Map<string, { id: string; name: string; calculationType: CalculationType | string }>,
+  holidayDatesSet: Set<string>,
+  legacyCalculationTypes?: (CalculationType | string)[]
+): ComputedSegment[] {
+  return segments.map((segment) => {
+    const leaveType = leaveTypeMap.get(segment.leaveTypeId);
+    if (!leaveType) {
+      throw new Error('Jenis cuti yang dipilih tidak valid');
+    }
+
+    const calcTypes = legacyCalculationTypes ?? [leaveType.calculationType];
+    const totalDays = calculateLeaveDays(
+      segment.startDate,
+      segment.endDate,
+      calcTypes,
+      holidayDatesSet
+    );
+
+    if (totalDays <= 0) {
+      throw new Error(
+        `Rentang ${formatDateId(segment.startDate)} - ${formatDateId(segment.endDate)} (${leaveType.name}) tidak mengandung hari cuti yang dapat dihitung. Periksa kembali tanggal dan jenis cutinya.`
+      );
+    }
+
+    return { ...segment, totalDays };
+  });
+}
+
+/** Envelope agregat: start paling awal, end paling akhir, total = jumlah seluruh segment. */
+export function buildEnvelope(segments: ComputedSegment[]) {
+  if (segments.length === 0) {
+    throw new Error('Minimal satu rentang tanggal');
+  }
+
+  return {
+    startDate: new Date(Math.min(...segments.map((s) => s.startDate.getTime()))),
+    endDate: new Date(Math.max(...segments.map((s) => s.endDate.getTime()))),
+    totalDays: segments.reduce((sum, s) => sum + s.totalDays, 0),
+  };
+}
 
 export interface LeaveFilterOptions {
   userId?: string;
@@ -15,28 +114,47 @@ export interface LeaveFilterOptions {
   searchUser?: string;
 }
 
-export async function createLeaveRequest(userId: string, input: CreateLeaveRequestInput) {
+export async function createLeaveRequest(userId: string, input: CreateLeaveRequestPayload) {
   const user = await prisma.user.findUnique({ where: { id: userId, deletedAt: null } });
   if (!user) {
     throw new Error('Sesi pengguna telah kadaluarsa. Silakan keluar (logout) dan login kembali.');
   }
 
-  const startDate = new Date(input.startDate);
-  const endDate = new Date(input.endDate);
+  const isLegacy = !input.segments || input.segments.length === 0;
+  const segments = buildSegmentsFromInput(input);
+  const segmentTypeIds = unique(segments.map((s) => s.leaveTypeId));
 
-  // 1. Fetch selected leave types
+  // 1. Fetch jenis cuti yang dipakai seluruh segment
   const leaveTypes = await prisma.leaveType.findMany({
-    where: { id: { in: input.leaveTypeIds } },
+    where: { id: { in: segmentTypeIds } },
   });
 
-  if (leaveTypes.length === 0) {
+  if (leaveTypes.length !== segmentTypeIds.length) {
     throw new Error('Jenis cuti yang dipilih tidak valid');
   }
 
-  // 2. Determine calculation modes
+  const leaveTypeMap = new Map(leaveTypes.map((t) => [t.id, t]));
+
+  // 2. Hitung total hari PER SEGMENT (calculationType jenis cuti masing-masing segment)
   const holidayDatesSet = await getHolidayDatesSet();
-  const calcTypes = leaveTypes.map((t) => t.calculationType);
-  const totalDays = calculateLeaveDays(startDate, endDate, calcTypes, holidayDatesSet);
+  const computedSegments = computeSegments(
+    segments,
+    leaveTypeMap,
+    holidayDatesSet,
+    // Bentuk lama: beberapa jenis cuti pada satu rentang → pakai seluruh mode perhitungan (perilaku lama)
+    isLegacy ? leaveTypes.map((t) => t.calculationType) : undefined
+  );
+
+  // 3. Envelope agregat (start paling awal, end paling akhir, total = jumlah segment)
+  const envelope = buildEnvelope(computedSegments);
+  const startDate = envelope.startDate;
+  const endDate = envelope.endDate;
+  const totalDays = envelope.totalDays;
+
+  // Pivot jenis cuti (unik) — tetap diisi demi kompatibilitas list/filter lama
+  const requestTypeIds = isLegacy
+    ? unique(input.leaveTypeIds ?? segmentTypeIds)
+    : segmentTypeIds;
 
   // Check for overlapping active or completed leave requests for this user (ON_PROGRESS, APPROVED, or DONE)
   const overlappingRequest = await prisma.leaveRequest.findFirst({
@@ -96,7 +214,7 @@ export async function createLeaveRequest(userId: string, input: CreateLeaveReque
     }
   }
 
-  // 3. Status ON_PROGRESS (Quota does NOT decrease yet)
+  // 4. Simpan pengajuan + segment (nested create) + pivot jenis cuti
   return prisma.leaveRequest.create({
     data: {
       userId,
@@ -107,7 +225,16 @@ export async function createLeaveRequest(userId: string, input: CreateLeaveReque
       attachmentUrl: input.attachmentUrl,
       status: LeaveStatus.ON_PROGRESS,
       requestTypes: {
-        create: input.leaveTypeIds.map((ltId) => ({ leaveTypeId: ltId })),
+        create: requestTypeIds.map((ltId) => ({ leaveTypeId: ltId })),
+      },
+      segments: {
+        create: computedSegments.map((segment) => ({
+          leaveTypeId: segment.leaveTypeId,
+          startDate: segment.startDate,
+          endDate: segment.endDate,
+          totalDays: segment.totalDays,
+          order: segment.order,
+        })),
       },
     },
     include: {
@@ -115,6 +242,10 @@ export async function createLeaveRequest(userId: string, input: CreateLeaveReque
         include: {
           leaveType: true,
         },
+      },
+      segments: {
+        include: { leaveType: true },
+        orderBy: { order: 'asc' },
       },
     },
   });
@@ -124,7 +255,7 @@ export async function updateLeaveRequest(
   requestId: string,
   userId: string,
   isAdmin: boolean,
-  input: Partial<CreateLeaveRequestInput>
+  input: Partial<CreateLeaveRequestPayload>
 ) {
   return prisma.$transaction(async (tx) => {
     const existing = await tx.leaveRequest.findUnique({
@@ -132,6 +263,7 @@ export async function updateLeaveRequest(
       include: {
         user: { include: { quota: true } },
         requestTypes: { include: { leaveType: true } },
+        segments: { include: { leaveType: true }, orderBy: { order: 'asc' } },
       },
     });
 
@@ -147,21 +279,84 @@ export async function updateLeaveRequest(
       throw new Error('Anda tidak memiliki akses untuk mengubah pengajuan ini');
     }
 
-    const leaveTypeIds = input.leaveTypeIds || existing.requestTypes.map((r) => r.leaveTypeId);
+    // --- Susun segment hasil edit -------------------------------------------------
+    // 1) `segments[]` dikirim → pakai apa adanya (bentuk baru)
+    // 2) bentuk lama (leaveTypeIds + startDate/endDate) → satu segment otomatis
+    // 3) tidak ada perubahan rentang → pakai segment yang sudah tersimpan
+    const hasSegmentsInput = Array.isArray(input.segments) && input.segments.length > 0;
+    const hasLegacyRange = !!input.startDate || !!input.endDate || !!input.leaveTypeIds;
+
+    let segments: NormalizedSegment[];
+
+    if (hasSegmentsInput) {
+      segments = buildSegmentsFromInput(input as CreateLeaveRequestPayload);
+    } else if (hasLegacyRange) {
+      const legacyTypeIds = input.leaveTypeIds?.length
+        ? input.leaveTypeIds
+        : existing.requestTypes.map((r) => r.leaveTypeId);
+      if (!legacyTypeIds.length) {
+        throw new Error('Pilih minimal satu jenis cuti');
+      }
+      segments = [
+        {
+          leaveTypeId: legacyTypeIds[0],
+          startDate: input.startDate ? new Date(input.startDate) : existing.startDate,
+          endDate: input.endDate ? new Date(input.endDate) : existing.endDate,
+          order: 0,
+        },
+      ];
+    } else if (existing.segments.length > 0) {
+      segments = existing.segments.map((s) => ({
+        leaveTypeId: s.leaveTypeId,
+        startDate: s.startDate,
+        endDate: s.endDate,
+        order: s.order,
+      }));
+    } else {
+      const fallbackTypeId = existing.requestTypes[0]?.leaveTypeId;
+      if (!fallbackTypeId) {
+        throw new Error('Pilih minimal satu jenis cuti');
+      }
+      segments = [
+        {
+          leaveTypeId: fallbackTypeId,
+          startDate: existing.startDate,
+          endDate: existing.endDate,
+          order: 0,
+        },
+      ];
+    }
+
+    const segmentTypeIds = unique(segments.map((s) => s.leaveTypeId));
     const leaveTypes = await tx.leaveType.findMany({
-      where: { id: { in: leaveTypeIds } },
+      where: { id: { in: segmentTypeIds } },
     });
 
-    const startDate = input.startDate ? new Date(input.startDate) : existing.startDate;
-    const endDate = input.endDate ? new Date(input.endDate) : existing.endDate;
-
-    const calcTypes = leaveTypes.map((t) => t.calculationType);
-    const holidayDatesSet = await getHolidayDatesSet();
-    const newTotalDays = calculateLeaveDays(startDate, endDate, calcTypes, holidayDatesSet);
-
-    if (newTotalDays <= 0) {
-      throw new Error('Jumlah hari cuti tidak valid');
+    if (leaveTypes.length !== segmentTypeIds.length) {
+      throw new Error('Jenis cuti yang dipilih tidak valid');
     }
+
+    const leaveTypeMap = new Map(leaveTypes.map((t) => [t.id, t]));
+    const holidayDatesSet = await getHolidayDatesSet();
+    const isLegacyCalc = !hasSegmentsInput && segments.length === 1 && (input.leaveTypeIds?.length ?? 0) > 1;
+
+    const computedSegments = computeSegments(
+      segments,
+      leaveTypeMap,
+      holidayDatesSet,
+      isLegacyCalc ? leaveTypes.map((t) => t.calculationType) : undefined
+    );
+
+    const envelope = buildEnvelope(computedSegments);
+    const startDate = envelope.startDate;
+    const endDate = envelope.endDate;
+    const newTotalDays = envelope.totalDays;
+
+    const requestTypeIds = hasSegmentsInput
+      ? segmentTypeIds
+      : input.leaveTypeIds?.length
+        ? unique(input.leaveTypeIds)
+        : segmentTypeIds;
 
     // Business Logic for APPROVED request update (Handling Difference in Days)
     if (existing.status === LeaveStatus.APPROVED) {
@@ -221,19 +416,23 @@ export async function updateLeaveRequest(
       }
     }
 
-    // Update pivot leave types if provided
-    if (input.leaveTypeIds) {
-      await tx.leaveRequestType.deleteMany({
-        where: { leaveRequestId: requestId },
-      });
+    // Ganti pivot jenis cuti & segment dengan versi terbaru
+    await tx.leaveRequestType.deleteMany({ where: { leaveRequestId: requestId } });
+    await tx.leaveRequestType.createMany({
+      data: requestTypeIds.map((ltId) => ({ leaveRequestId: requestId, leaveTypeId: ltId })),
+    });
 
-      await tx.leaveRequestType.createMany({
-        data: input.leaveTypeIds.map((ltId) => ({
-          leaveRequestId: requestId,
-          leaveTypeId: ltId,
-        })),
-      });
-    }
+    await tx.leaveRequestSegment.deleteMany({ where: { leaveRequestId: requestId } });
+    await tx.leaveRequestSegment.createMany({
+      data: computedSegments.map((segment) => ({
+        leaveRequestId: requestId,
+        leaveTypeId: segment.leaveTypeId,
+        startDate: segment.startDate,
+        endDate: segment.endDate,
+        totalDays: segment.totalDays,
+        order: segment.order,
+      })),
+    });
 
     return tx.leaveRequest.update({
       where: { id: requestId },
@@ -246,6 +445,7 @@ export async function updateLeaveRequest(
       },
       include: {
         requestTypes: { include: { leaveType: true } },
+        segments: { include: { leaveType: true }, orderBy: { order: 'asc' } },
       },
     });
   });
@@ -500,6 +700,10 @@ export async function getLeaveRequests(options: LeaveFilterOptions = {}) {
           leaveType: true,
         },
       },
+      segments: {
+        include: { leaveType: true },
+        orderBy: { order: 'asc' },
+      },
     },
     orderBy: { createdAt: 'desc' },
   });
@@ -525,6 +729,10 @@ export async function getLeaveRequestById(id: string) {
         include: {
           leaveType: true,
         },
+      },
+      segments: {
+        include: { leaveType: true },
+        orderBy: { order: 'asc' },
       },
     },
   });

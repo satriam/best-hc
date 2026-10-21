@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { getSession } from '@/lib/auth';
 import { getLeaveRequests, createLeaveRequest } from '@/services/leave.service';
-import { createLeaveRequestSchema } from '@/schemas/leave.schema';
+import { createLeaveRequestPayloadSchema } from '@/schemas/leave.schema';
 import { LeaveStatus } from '@prisma/client';
 
 export async function GET(request: Request) {
@@ -42,7 +42,7 @@ export async function POST(request: Request) {
     const text = await request.text();
     const body = text && text.trim().length > 0 ? JSON.parse(text) : {};
 
-    const validatedData = createLeaveRequestSchema.parse(body);
+    const validatedData = createLeaveRequestPayloadSchema.parse(body);
 
     // ADMIN can create leave requests on behalf of another user
     const targetUserId =
