@@ -7,14 +7,57 @@ import { SpklType } from '@prisma/client';
  * pernah dipercaya (lihat `createSpkl`/`updateSpkl` di `services/spkl.service`).
  *
  * Batasan hukum mengikuti PP 35/2021:
- *  - maks 4 jam lembur per hari per pekerja
+ *  - batas jam lembur HARIAN hanya berlaku untuk **Lembur Hari Kerja**
+ *    (maks 4 jam/hari). Lembur di luar hari kerja & lembur hari libur resmi
+ *    TIDAK dibatasi per hari — lihat `PP35_MAX_HOURS_PER_DAY` / `getDailyLimit`.
  *  - maks 18 jam per minggu per pekerja (di luar lembur hari libur resmi)
  *  - maks 72 jam per bulan per pekerja (di luar lembur hari libur resmi)
  */
 
-export const PP35_MAX_HOURS_PER_DAY = 4;
+/**
+ * Batas jam lembur per hari menurut jenis lembur (PP 35/2021).
+ *
+ * Hanya **Lembur Hari Kerja** yang dibatasi 4 jam/hari. Lembur di luar hari
+ * kerja dan lembur hari libur resmi TIDAK dibatasi per hari (`null`) — pada
+ * hari istirahat/libur resmi formula upahnya saja yang berjenjang
+ * (jam ke-1..8 ×2, jam ke-9 ×3, jam ke-10 dst ×4).
+ *
+ * Bila HR punya angka resmi lain, ubah HANYA di sini.
+ */
+export const PP35_MAX_HOURS_PER_DAY: Record<SpklType, number | null> = {
+  [SpklType.WORKDAY]: 4,
+  [SpklType.OUTSIDE_WORKDAY]: null, // tanpa batas harian
+  [SpklType.PUBLIC_HOLIDAY]: null, // tanpa batas harian
+};
+
 export const PP35_MAX_HOURS_PER_WEEK = 18;
 export const PP35_MAX_HOURS_PER_MONTH = 72;
+
+/** Label jenis lembur (dipakai pada pesan validasi). */
+export const SPKL_TYPE_LABEL: Record<SpklType, string> = {
+  [SpklType.WORKDAY]: 'Lembur Hari Kerja',
+  [SpklType.OUTSIDE_WORKDAY]: 'Lembur Diluar Hari Kerja',
+  [SpklType.PUBLIC_HOLIDAY]: 'Lembur Hari Libur Resmi',
+};
+
+/**
+ * Batas jam lembur per hari untuk jenis tertentu.
+ * `null` berarti TIDAK ada batas harian untuk jenis tersebut.
+ * Nilai jenis yang tidak dikenal diperlakukan sebagai Lembur Hari Kerja.
+ */
+export function getDailyLimit(type?: SpklType | string | null): number | null {
+  const key = (type ?? SpklType.WORKDAY) as SpklType;
+  if (Object.prototype.hasOwnProperty.call(PP35_MAX_HOURS_PER_DAY, key)) {
+    return PP35_MAX_HOURS_PER_DAY[key];
+  }
+  return PP35_MAX_HOURS_PER_DAY[SpklType.WORKDAY];
+}
+
+/** Label jenis lembur yang aman untuk nilai tak dikenal (default: hari kerja). */
+export function getTypeLabel(type?: SpklType | string | null): string {
+  const key = (type ?? SpklType.WORKDAY) as SpklType;
+  return SPKL_TYPE_LABEL[key] ?? SPKL_TYPE_LABEL[SpklType.WORKDAY];
+}
 
 export const SPKL_MIN_DATE = new Date(Date.UTC(2020, 0, 1));
 
@@ -188,7 +231,8 @@ function groupSum(
  * @param options  `strict` mengubah peringatan mingguan/bulanan menjadi error
  *
  * Aturan:
- *  - > 4 jam/hari per pekerja → ERROR (ditolak)
+ *  - batas harian HANYA untuk Lembur Hari Kerja (> 4 jam/hari per pekerja → ERROR).
+ *    OUTSIDE_WORKDAY & PUBLIC_HOLIDAY tanpa batas harian (berapa pun jamnya).
  *  - > 18 jam/minggu per pekerja → WARNING (atau error bila strict)
  *  - > 72 jam/bulan per pekerja → WARNING (atau error bila strict)
  *  - Lembur hari libur resmi (PUBLIC_HOLIDAY) dikecualikan dari batas minggu/bulan
@@ -201,12 +245,23 @@ export function validatePp35(
   const errors: string[] = [];
   const warnings: string[] = [];
 
-  // 1. Batas harian 4 jam — hanya untuk item yang sedang diinput.
-  const daily = groupSum(items, (item) => `${item.workerNik}::${toDateKey(item.workDate)}`);
+  // 1. Batas harian per jenis lembur — hanya untuk item yang sedang diinput.
+  //    `type` ikut jadi bagian kunci: pekerja dengan 2 jenis lembur pada tanggal
+  //    yang sama TIDAK dijumlahkan menjadi satu batas.
+  //    Hanya Lembur Hari Kerja yang dibatasi (4 jam); jenis lain `null` = tanpa
+  //    batas harian, jadi tidak pernah menghasilkan error/warning harian.
+  const daily = groupSum(
+    items,
+    (item) => `${item.workerNik}::${toDateKey(item.workDate)}::${item.type ?? SpklType.WORKDAY}`
+  );
   for (const { total, sample } of daily.values()) {
-    if (total > PP35_MAX_HOURS_PER_DAY) {
+    const type = (sample.type ?? SpklType.WORKDAY) as SpklType;
+    const limit = getDailyLimit(type);
+    if (limit === null) continue;
+    if (total > limit) {
       errors.push(
-        `Lembur ${sample.workerName} pada ${formatDateIndonesian(sample.workDate)} melebihi 4 jam/hari (PP 35/2021)`
+        `Lembur ${sample.workerName} pada ${formatDateIndonesian(sample.workDate)} ` +
+          `melebihi ${limit} jam/hari untuk ${getTypeLabel(type)} (PP 35/2021)`
       );
     }
   }

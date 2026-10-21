@@ -6,7 +6,7 @@ import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
 import { Input } from '@/components/ui/Input';
 import { Modal } from '@/components/ui/Modal';
-import { computeHours, computeTotal, validatePp35, PP35_MAX_HOURS_PER_DAY } from '@/lib/spkl';
+import { computeHours, computeTotal, validatePp35, getDailyLimit } from '@/lib/spkl';
 import {
   AlertTriangle,
   ArrowLeft,
@@ -417,9 +417,17 @@ export function SpklForm({ mode, spklId, initial }: SpklFormProps) {
     [effectiveRows]
   );
 
+  // Batas harian hanya berlaku untuk jenis lembur yang punya batas
+  // (saat ini hanya Lembur Hari Kerja; jenis lain `null` = tanpa batas).
+  const dailyLimit = getDailyLimit(type);
+
   const dailyViolations = useMemo(
-    () => effectiveRows.filter((row) => rowHours(row) > PP35_MAX_HOURS_PER_DAY),
-    [effectiveRows]
+    () =>
+      effectiveRows.filter((row) => {
+        const limit = getDailyLimit(type);
+        return limit !== null && rowHours(row) > limit;
+      }),
+    [effectiveRows, type]
   );
 
   /** Peringatan PP 35/2021 (mingguan/bulanan) dari baris yang sedang diisi. */
@@ -878,7 +886,7 @@ export function SpklForm({ mode, spklId, initial }: SpklFormProps) {
                 const issues = rowIssues(row);
                 const showError = attempted && issues.length > 0;
                 const hours = rowHours(row);
-                const tooLong = hours > PP35_MAX_HOURS_PER_DAY;
+                const tooLong = dailyLimit !== null && hours > dailyLimit;
                 return (
                   <tr key={row.key} className={showError ? 'bg-rose-50/40' : 'hover:bg-slate-50/60'}>
                     <td className="px-2 py-2 text-center text-[11px] font-bold text-slate-400">
@@ -1037,7 +1045,7 @@ export function SpklForm({ mode, spklId, initial }: SpklFormProps) {
                         }`}
                         title={
                           tooLong
-                            ? 'Melebihi batas 4 jam/hari (PP 35/2021)'
+                            ? `Melebihi batas ${dailyLimit} jam/hari (PP 35/2021)`
                             : 'Dihitung otomatis oleh sistem'
                         }
                       >
@@ -1111,13 +1119,13 @@ export function SpklForm({ mode, spklId, initial }: SpklFormProps) {
           {dailyViolations.length > 0 && (
             <div className="p-4 rounded-xl border bg-rose-50 border-rose-200 text-rose-800 text-xs space-y-1">
               <div className="flex items-center gap-2 font-bold">
-                <AlertTriangle className="w-4 h-4" /> Melebihi batas 4 jam/hari (PP 35/2021)
+                <AlertTriangle className="w-4 h-4" /> Melebihi batas {dailyLimit} jam/hari (PP 35/2021)
               </div>
               <ul className="ml-6 list-disc space-y-0.5 font-medium">
                 {dailyViolations.map((row) => (
                   <li key={row.key}>
-                    {row.workerName || row.workerNik || 'Baris'} — {formatHoursLabel(rowHours(row))} (maksimal 4
-                    jam per hari). Sistem akan menolak SPKL ini.
+                    {row.workerName || row.workerNik || 'Baris'} — {formatHoursLabel(rowHours(row))} (maksimal{' '}
+                    {dailyLimit} jam per hari). Sistem akan menolak SPKL ini.
                   </li>
                 ))}
               </ul>
