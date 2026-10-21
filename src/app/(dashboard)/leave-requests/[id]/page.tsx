@@ -96,6 +96,11 @@ export default function LeaveRequestDetailPage({
   const [holidaysInRange, setHolidaysInRange] = useState<HolidayDetail[]>([]);
   const [weekendDaysCount, setWeekendDaysCount] = useState<number>(0);
 
+  // Kuota per jenis cuti milik pemohon (tabel UserLeaveQuota via GET /api/quotas/<userId>)
+  const [typeQuotas, setTypeQuotas] = useState<
+    Record<string, { totalQuota: number; usedQuota: number; borrowedQuota: number; year: number }>
+  >({});
+
   const safeParseJson = async (res: Response) => {
     const text = await res.text();
     try {
@@ -126,6 +131,43 @@ export default function LeaveRequestDetailPage({
       }
 
       setRequestDetail(jsonReq.data);
+
+      // Kuota per jenis cuti milik pemohon — sumber utama rincian kuota di halaman ini
+      const ownerId = jsonReq.data.user?.id ?? jsonReq.data.userId;
+      const requestYear =
+        Number(String(jsonReq.data.startDate).slice(0, 4)) || new Date().getFullYear();
+      if (ownerId) {
+        try {
+          const jsonQuotas = await safeParseJson(
+            await fetch(`/api/quotas/${ownerId}?year=${requestYear}`)
+          );
+          if (jsonQuotas.success && Array.isArray(jsonQuotas.data)) {
+            const map: Record<
+              string,
+              { totalQuota: number; usedQuota: number; borrowedQuota: number; year: number }
+            > = {};
+            jsonQuotas.data.forEach(
+              (q: {
+                leaveTypeId: string;
+                totalQuota: number;
+                usedQuota: number;
+                borrowedQuota?: number;
+                year: number;
+              }) => {
+                map[q.leaveTypeId] = {
+                  totalQuota: q.totalQuota,
+                  usedQuota: q.usedQuota,
+                  borrowedQuota: q.borrowedQuota ?? 0,
+                  year: q.year,
+                };
+              }
+            );
+            setTypeQuotas(map);
+          }
+        } catch (quotaErr) {
+          console.error('Gagal mengambil kuota per jenis cuti:', quotaErr);
+        }
+      }
 
       if (jsonMe.success && jsonMe.data) {
         setCurrentUserRole(jsonMe.data.role);
@@ -248,8 +290,53 @@ export default function LeaveRequestDetailPage({
   const endDateStr = requestDetail.endDate.split('T')[0];
   const leaveType = requestDetail.requestTypes?.[0]?.leaveType;
   const userObj = requestDetail.user;
-  const remainingQuota = (userObj.quota?.totalQuota ?? 12) - (userObj.quota?.usedQuota ?? 0);
   const selectedTypeName = (leaveType?.name || '').toLowerCase();
+
+  // Rincian kuota SESUAI JENIS CUTI pengajuan (bukan LeaveQuota generik "Cuti Tahunan").
+  // - APPROVED/DONE: usedQuota sudah termasuk pengajuan ini, sehingga sisa SEBELUM = sisa saat ini + totalDays.
+  // - ON_PROGRESS : kuota belum dipotong, sisa SESUDAH = proyeksi setelah pengajuan disetujui.
+  // - REJECTED/CANCELLED: kuota tidak terpotong, sisa SESUDAH = sisa SEBELUM.
+  const isQuotaCut =
+    requestDetail.status === 'APPROVED' || requestDetail.status === 'DONE';
+  const isQuotaPending = requestDetail.status === 'ON_PROGRESS';
+  const daysAlreadyCut = isQuotaCut ? requestDetail.totalDays : 0;
+  const daysProjected = isQuotaCut || isQuotaPending ? requestDetail.totalDays : 0;
+
+  const quotaRows = (requestDetail.requestTypes ?? []).map((rt) => {
+    const quota = typeQuotas[rt.leaveType.id];
+    const isUnlimited = !!quota && quota.totalQuota >= 999;
+    const remainingNow = quota ? quota.totalQuota - quota.usedQuota : null;
+    const remainingBefore = remainingNow === null ? null : remainingNow + daysAlreadyCut;
+    const remainingAfter = remainingBefore === null ? null : remainingBefore - daysProjected;
+
+    let note = '';
+    if (!quota) {
+      note = 'Data kuota jenis cuti ini belum tersedia pada tahun pengajuan.';
+    } else if (isUnlimited) {
+      note = 'Jenis cuti ini tidak dibatasi kuota.';
+    } else if (requestDetail.status === 'REJECTED' || requestDetail.status === 'CANCELLED') {
+      note = `Status ${requestDetail.status}: kuota tidak terpotong, sisa sesudah sama dengan sisa sebelum.`;
+    } else if (isQuotaPending) {
+      note = `Status ON_PROGRESS: kuota belum dipotong. Jika pengajuan disetujui, sisa menjadi ${remainingAfter} hari.`;
+    } else {
+      note = `Status ${requestDetail.status}: kuota sudah terpotong ${requestDetail.totalDays} hari untuk pengajuan ini.`;
+    }
+
+    return {
+      typeId: rt.leaveType.id,
+      name: rt.leaveType.name,
+      totalQuota: quota ? quota.totalQuota : null,
+      usedQuota: quota ? quota.usedQuota : null,
+      remainingBefore,
+      remainingAfter,
+      isUnlimited,
+      hasQuota: !!quota,
+      isOver: remainingAfter !== null && !isUnlimited && remainingAfter < 0,
+      note,
+    };
+  });
+
+  const primaryQuota = quotaRows[0];
 
 
 
@@ -427,17 +514,28 @@ export default function LeaveRequestDetailPage({
 
               <div>
                 <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wider block">
-                  Sisa Kuota Cuti Tahunan
+                  Sisa Kuota Sesuai Jenis Cuti
                 </span>
-                <p className="text-sm font-black text-indigo-900 mt-1">
-                  {remainingQuota} Hari <span className="text-xs font-semibold text-slate-500">(dari {userObj.quota?.totalQuota ?? 12} Hari)</span>
-                </p>
+                {quotaRows.length === 0 ? (
+                  <p className="text-sm font-black text-slate-500 mt-1">Sesuai ketentuan</p>
+                ) : (
+                  quotaRows.map((row) => (
+                    <p key={row.typeId} className="text-sm font-black text-indigo-900 mt-1">
+                      {row.isUnlimited
+                        ? 'Tidak dibatasi'
+                        : row.hasQuota
+                        ? `${row.remainingBefore} Hari`
+                        : 'Belum ada data'}
+                      <span className="text-[11px] font-semibold text-slate-500"> • {row.name}</span>
+                    </p>
+                  ))
+                )}
               </div>
             </div>
           </div>
 
           {/* Section 2: Detail Jenis Cuti */}
-          <div className="w-full">
+          <div className="w-full space-y-4">
             <h3 className="text-xs font-black uppercase tracking-wider text-indigo-700 mb-4 flex items-center gap-2">
               <FileText className="w-4 h-4 text-indigo-600" /> Detail Jenis Cuti & Ketentuan
             </h3>
@@ -456,13 +554,130 @@ export default function LeaveRequestDetailPage({
               </div>
 
               <div className="bg-white px-4 py-2.5 rounded-xl border border-indigo-200 shadow-2xs text-right">
-                <span className="text-[11px] text-slate-500 font-semibold block">Sisa Kuota Jenis Cuti Ini</span>
+                <span className="text-[11px] text-slate-500 font-semibold block">
+                  Total Kuota {primaryQuota?.name || 'Jenis Cuti Ini'}
+                </span>
                 <span className="text-base font-black text-indigo-900">
-                  {leaveType?.name === 'Cuti Tahunan' || leaveType?.name === 'Pinjam Cuti'
-                    ? `${remainingQuota} Hari`
-                    : leaveType?.daysDescription || 'Sesuai Ketentuan'}
+                  {primaryQuota
+                    ? primaryQuota.isUnlimited
+                      ? 'Tidak dibatasi'
+                      : primaryQuota.hasQuota
+                      ? `${primaryQuota.totalQuota} Hari`
+                      : 'Sesuai Ketentuan'
+                    : 'Sesuai Ketentuan'}
                 </span>
               </div>
+            </div>
+
+            {/* Rincian kuota per jenis cuti pengajuan (dipakai / sisa sebelum / sisa sesudah) */}
+            <div className="rounded-2xl border border-slate-200 bg-white p-4 space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span className="text-xs font-extrabold text-slate-900 flex items-center gap-2">
+                  <Sparkles className="w-4 h-4 text-indigo-600" /> Rincian Kuota Pengajuan Ini
+                </span>
+                <span className="text-[11px] font-semibold text-slate-500">
+                  Durasi pengajuan: {requestDetail.totalDays} hari
+                </span>
+              </div>
+
+              {quotaRows.length === 0 ? (
+                <p className="text-xs text-slate-500 font-medium">
+                  Jenis cuti pengajuan ini belum tercatat.
+                </p>
+              ) : (
+                quotaRows.map((row) => (
+                  <div
+                    key={row.typeId}
+                    className={`rounded-xl border p-3 space-y-2 ${
+                      row.isOver ? 'bg-rose-50/80 border-rose-300' : 'bg-slate-50/70 border-slate-200'
+                    }`}
+                  >
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <span className="text-xs font-extrabold text-slate-900">{row.name}</span>
+                      <span className="text-[11px] font-bold text-indigo-800 bg-indigo-50 border border-indigo-200 px-2 py-0.5 rounded-md">
+                        Tahun {typeQuotas[row.typeId]?.year ?? startDateStr.slice(0, 4)}
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                      <div className="p-2.5 rounded-lg bg-white border border-slate-200">
+                        <span className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider">
+                          Kuota dipakai
+                        </span>
+                        <span className="block text-sm font-black text-slate-800">
+                          {row.isUnlimited
+                            ? 'Tidak dibatasi'
+                            : row.hasQuota
+                            ? `${row.usedQuota} Hari`
+                            : '-'}
+                        </span>
+                      </div>
+
+                      <div className="p-2.5 rounded-lg bg-indigo-50 border border-indigo-200">
+                        <span className="block text-[10px] font-bold text-indigo-700 uppercase tracking-wider">
+                          Sisa sebelum
+                        </span>
+                        <span className="block text-sm font-black text-indigo-900">
+                          {row.isUnlimited
+                            ? 'Tidak dibatasi'
+                            : row.hasQuota
+                            ? `${row.remainingBefore} Hari`
+                            : 'Belum ada data'}
+                        </span>
+                        {!row.isUnlimited && row.hasQuota && (
+                          <span className="block text-[10px] text-slate-500 font-semibold">
+                            dari {row.totalQuota} hari
+                          </span>
+                        )}
+                      </div>
+
+                      <div
+                        className={`p-2.5 rounded-lg border ${
+                          row.isOver
+                            ? 'bg-rose-100 border-rose-300'
+                            : 'bg-emerald-50 border-emerald-200'
+                        }`}
+                      >
+                        <span
+                          className={`block text-[10px] font-bold uppercase tracking-wider ${
+                            row.isOver ? 'text-rose-700' : 'text-emerald-700'
+                          }`}
+                        >
+                          Sisa sesudah
+                        </span>
+                        <span
+                          className={`block text-sm font-black ${
+                            row.isOver ? 'text-rose-700' : 'text-emerald-900'
+                          }`}
+                        >
+                          {row.isUnlimited
+                            ? 'Tidak dibatasi'
+                            : row.hasQuota
+                            ? `${row.remainingAfter} Hari`
+                            : '-'}
+                        </span>
+                        {row.isOver && (
+                          <span className="block text-[10px] text-rose-700 font-extrabold">
+                            ⚠ Kuota tidak cukup
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    {row.note && (
+                      <p
+                        className={`text-[11px] font-semibold rounded-lg p-2 border ${
+                          row.hasQuota
+                            ? 'bg-amber-50 border-amber-200 text-amber-900'
+                            : 'bg-slate-100 border-slate-200 text-slate-600'
+                        }`}
+                      >
+                        {row.note}
+                      </p>
+                    )}
+                  </div>
+                ))
+              )}
             </div>
           </div>
 
