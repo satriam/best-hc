@@ -19,7 +19,6 @@ function LoginForm() {
   const {
     register,
     handleSubmit,
-    setValue,
     formState: { errors },
   } = useForm<LoginInput>({
     resolver: zodResolver(loginSchema),
@@ -52,16 +51,11 @@ function LoginForm() {
         router.push(callbackUrl || '/dashboard');
       }
       router.refresh();
-    } catch (err: any) {
-      setError(err.message);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Login gagal');
     } finally {
       setLoading(false);
     }
-  };
-
-  const fillDemoAccount = (email: string, pass: string) => {
-    setValue('email', email);
-    setValue('password', pass);
   };
 
   return (
@@ -117,44 +111,6 @@ function LoginForm() {
           {!loading && <ArrowRight className="w-4 h-4 ml-1" />}
         </Button>
       </form>
-
-      {/* Demo Quick Accounts */}
-      <div className="mt-8 pt-6 border-t border-slate-100">
-        <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-3 text-center">
-          Pilih Akun Demo Quick Login
-        </p>
-        <div className="space-y-2">
-          <button
-            onClick={() => fillDemoAccount('user1@besthcm.com', 'user123')}
-            className="w-full flex items-center justify-between p-2.5 rounded-lg border border-slate-200 bg-slate-50 hover:bg-indigo-50 hover:border-indigo-200 text-left transition-colors group cursor-pointer"
-          >
-            <div>
-              <p className="text-xs font-semibold text-slate-800 group-hover:text-indigo-900">
-                Satria (User / Karyawan)
-              </p>
-              <p className="text-[11px] text-slate-500">user1@besthcm.com</p>
-            </div>
-            <span className="text-[10px] font-semibold px-2 py-0.5 rounded bg-blue-100 text-blue-700">
-              USER
-            </span>
-          </button>
-
-          <button
-            onClick={() => fillDemoAccount('admin@besthcm.com', 'admin123')}
-            className="w-full flex items-center justify-between p-2.5 rounded-lg border border-slate-200 bg-slate-50 hover:bg-indigo-50 hover:border-indigo-200 text-left transition-colors group cursor-pointer"
-          >
-            <div>
-              <p className="text-xs font-semibold text-slate-800 group-hover:text-indigo-900">
-                Admin HCM (Administrator)
-              </p>
-              <p className="text-[11px] text-slate-500">admin@besthcm.com</p>
-            </div>
-            <span className="text-[10px] font-semibold px-2 py-0.5 rounded bg-indigo-100 text-indigo-700">
-              ADMIN
-            </span>
-          </button>
-        </div>
-      </div>
     </div>
   );
 }
