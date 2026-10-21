@@ -52,6 +52,7 @@ enum QuotaHistoryType {
 model User {
   id              String              @id @default(uuid())
   nip             String?
+  position        String?
   workUnit        String?
   name            String
   email           String              @unique
@@ -68,6 +69,7 @@ model User {
   quotaHistories  LeaveQuotaHistory[]
   spklRequests    Spkl[]              @relation("SpklRequester")
   spklSignerLinks SpklSignerUser[]
+  spklItems       SpklItem[]
 
   @@map("users")
 }
@@ -304,6 +306,8 @@ model Spkl {
 model SpklItem {
   id              String   @id @default(uuid())
   spklId          String
+  /// User akun yang diwakili baris ini (auto-isi NIK/nama/jabatan). Null = pekerja manual.
+  userId          String?
   order           Int      @default(0)
   workerNik       String
   workerName      String
@@ -318,7 +322,9 @@ model SpklItem {
   updatedAt       DateTime @updatedAt
 
   spkl Spkl @relation(fields: [spklId], references: [id], onDelete: Cascade)
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
 
   @@index([spklId])
+  @@index([userId])
   @@map("spkl_items")
 }
