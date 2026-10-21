@@ -881,7 +881,7 @@ export default function LeaveRequestDetailPage({
                             ? `${row.remainingBefore} Hari`
                             : 'Belum ada data'}
                         </span>
-                        {!row.isUnlimited && row.hasQuota && (
+                        {!row.isUnlimited && row.hasQuota && row.totalQuota !== null && (
                           <span className="block text-[10px] text-slate-500 font-semibold">
                             dari {row.totalQuota} hari
                           </span>
