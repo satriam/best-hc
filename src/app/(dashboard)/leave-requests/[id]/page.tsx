@@ -11,6 +11,7 @@ import { formatDate } from '@/lib/utils';
 import {
   ArrowLeft,
   Calendar,
+  CalendarRange,
   CheckCircle,
   XCircle,
   Clock,
@@ -63,19 +64,39 @@ interface LeaveRequestDetail {
       daysDescription?: string | null;
     };
   }>;
-  // Segmen multi-rentang (opsional — hanya tersedia bila API detail mengirimkannya)
+  // Segmen multi-rentang (satu pengajuan = daftar rentang, tiap rentang punya jenis cuti sendiri)
   segments?: Array<{
+    id?: string;
     leaveTypeId: string;
     totalDays: number;
     startDate: string;
     endDate: string;
     order?: number;
+    leaveType?: {
+      id: string;
+      name: string;
+      category?: string;
+    } | null;
   }>;
 }
 
 interface HolidayDetail {
   date: string;
   name: string;
+}
+
+/** Baris ringkas GET /api/leave-requests (untuk menandai tanggal yang sudah dipakai). */
+interface LeaveRequestListRow {
+  id: string;
+  status: string;
+  startDate: string;
+  endDate: string;
+  requestTypes?: Array<{ leaveType?: { name?: string | null } | null }>;
+  segments?: Array<{
+    startDate: string;
+    endDate: string;
+    leaveType?: { name?: string | null } | null;
+  }>;
 }
 
 export default function LeaveRequestDetailPage({
@@ -192,39 +213,68 @@ export default function LeaveRequestDetailPage({
 
       if (jsonRequests.success && Array.isArray(jsonRequests.data)) {
         const bookedList: Array<{ date: string; leaveType: string }> = [];
-        jsonRequests.data.forEach((req: any) => {
+        jsonRequests.data.forEach((req: LeaveRequestListRow) => {
           if (req.id !== requestId && (req.status === 'ON_PROGRESS' || req.status === 'APPROVED')) {
-            const s = new Date(req.startDate);
-            const e = new Date(req.endDate);
-            const typeName = req.requestTypes?.[0]?.leaveType?.name || 'Cuti';
+            // Tandai per rentang (segments) agar celah antar rentang tidak ikut ditandai.
+            const ranges: Array<{ startDate: string; endDate: string; leaveTypeName: string }> =
+              Array.isArray(req.segments) && req.segments.length > 0
+                ? req.segments.map((s) => ({
+                    startDate: String(s.startDate).split('T')[0],
+                    endDate: String(s.endDate).split('T')[0],
+                    leaveTypeName: s.leaveType?.name || 'Cuti',
+                  }))
+                : [
+                    {
+                      startDate: String(req.startDate).split('T')[0],
+                      endDate: String(req.endDate).split('T')[0],
+                      leaveTypeName: req.requestTypes?.[0]?.leaveType?.name || 'Cuti',
+                    },
+                  ];
 
-            let curr = new Date(s);
-            while (curr <= e) {
-              const year = curr.getFullYear();
-              const month = String(curr.getMonth() + 1).padStart(2, '0');
-              const day = String(curr.getDate()).padStart(2, '0');
-              bookedList.push({
-                date: `${year}-${month}-${day}`,
-                leaveType: typeName,
-              });
-              curr.setDate(curr.getDate() + 1);
-            }
+            ranges.forEach((range) => {
+              const curr = new Date(`${range.startDate}T00:00:00`);
+              const end = new Date(`${range.endDate}T00:00:00`);
+              while (curr <= end) {
+                const year = curr.getFullYear();
+                const month = String(curr.getMonth() + 1).padStart(2, '0');
+                const day = String(curr.getDate()).padStart(2, '0');
+                bookedList.push({
+                  date: `${year}-${month}-${day}`,
+                  leaveType: range.leaveTypeName,
+                });
+                curr.setDate(curr.getDate() + 1);
+              }
+            });
           }
         });
         setUserBookedDates(bookedList);
       }
 
-      // Calculate Breakdown for Display
-      if (jsonReq.data.requestTypes?.[0]?.leaveType?.id) {
+      // Hitung rincian hari libur: pakai segments[] bila ada (multi-rentang), selain itu bentuk lama.
+      const detailSegments: NonNullable<LeaveRequestDetail['segments']> = jsonReq.data.segments ?? [];
+      const calcPayload =
+        detailSegments.length > 0
+          ? {
+              segments: detailSegments.map((s) => ({
+                leaveTypeId: s.leaveTypeId,
+                startDate: String(s.startDate).split('T')[0],
+                endDate: String(s.endDate).split('T')[0],
+              })),
+            }
+          : jsonReq.data.requestTypes?.[0]?.leaveType?.id
+          ? {
+              leaveTypeIds: [jsonReq.data.requestTypes[0].leaveType.id],
+              startDate: String(jsonReq.data.startDate).split('T')[0],
+              endDate: String(jsonReq.data.endDate).split('T')[0],
+            }
+          : null;
+
+      if (calcPayload) {
         try {
           const resCalc = await fetch('/api/leave-requests/calculate', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              leaveTypeIds: [jsonReq.data.requestTypes[0].leaveType.id],
-              startDate: String(jsonReq.data.startDate).split('T')[0],
-              endDate: String(jsonReq.data.endDate).split('T')[0],
-            }),
+            body: JSON.stringify(calcPayload),
           });
           const jsonCalc = await safeParseJson(resCalc);
           if (jsonCalc.success) {
@@ -298,24 +348,61 @@ export default function LeaveRequestDetailPage({
   const endDateStr = requestDetail.endDate.split('T')[0];
   const leaveType = requestDetail.requestTypes?.[0]?.leaveType;
   const userObj = requestDetail.user;
-  const selectedTypeName = (leaveType?.name || '').toLowerCase();
+  const detailSegments = requestDetail.segments ?? [];
+  const hasSegments = detailSegments.length > 0;
+
+  // Daftar rentang tanggal: dari segments[] (multi-rentang) atau rentang tunggal (pengajuan lama).
+  const segmentRows = hasSegments
+    ? detailSegments.map((segment, index) => ({
+        no: index + 1,
+        typeId: segment.leaveTypeId,
+        typeName:
+          segment.leaveType?.name ||
+          requestDetail.requestTypes?.find((rt) => rt.leaveType.id === segment.leaveTypeId)?.leaveType
+            .name ||
+          'Jenis cuti',
+        startDate: String(segment.startDate).split('T')[0],
+        endDate: String(segment.endDate).split('T')[0],
+        days: Number(segment.totalDays) || 0,
+      }))
+    : [
+        {
+          no: 1,
+          typeId: leaveType?.id ?? '',
+          typeName: leaveType?.name || 'Cuti',
+          startDate: startDateStr,
+          endDate: endDateStr,
+          days: requestDetail.totalDays,
+        },
+      ];
+
+  // Hari per jenis cuti (dipakai untuk rincian kuota per jenis).
+  const daysByType = new Map<string, number>();
+  segmentRows.forEach((row) => {
+    if (!row.typeId) return;
+    daysByType.set(row.typeId, (daysByType.get(row.typeId) ?? 0) + row.days);
+  });
 
   // Rincian kuota SESUAI JENIS CUTI pengajuan (bukan LeaveQuota generik "Cuti Tahunan").
-  // - APPROVED/DONE: usedQuota sudah termasuk pengajuan ini, sehingga sisa SEBELUM = sisa saat ini + totalDays.
+  // - APPROVED/DONE: usedQuota sudah termasuk pengajuan ini, sehingga sisa SEBELUM = sisa saat ini + hari jenis itu.
   // - ON_PROGRESS : kuota belum dipotong, sisa SESUDAH = proyeksi setelah pengajuan disetujui.
   // - REJECTED/CANCELLED: kuota tidak terpotong, sisa SESUDAH = sisa SEBELUM.
   const isQuotaCut =
     requestDetail.status === 'APPROVED' || requestDetail.status === 'DONE';
   const isQuotaPending = requestDetail.status === 'ON_PROGRESS';
-  const daysAlreadyCut = isQuotaCut ? requestDetail.totalDays : 0;
-  const daysProjected = isQuotaCut || isQuotaPending ? requestDetail.totalDays : 0;
 
   const quotaRows = (requestDetail.requestTypes ?? []).map((rt) => {
     const quota = typeQuotas[rt.leaveType.id];
     const isUnlimited = !!quota && quota.totalQuota >= 999;
     const remainingNow = quota ? quota.totalQuota - quota.usedQuota : null;
-    const remainingBefore = remainingNow === null ? null : remainingNow + daysAlreadyCut;
-    const remainingAfter = remainingBefore === null ? null : remainingBefore - daysProjected;
+    // Hari jenis cuti ini pada pengajuan (agregat semua rentang dengan jenis yang sama).
+    const daysForType = hasSegments
+      ? daysByType.get(rt.leaveType.id) ?? 0
+      : requestDetail.totalDays;
+    const cutDays = isQuotaCut ? daysForType : 0;
+    const projectedDays = isQuotaCut || isQuotaPending ? daysForType : 0;
+    const remainingBefore = remainingNow === null ? null : remainingNow + cutDays;
+    const remainingAfter = remainingBefore === null ? null : remainingBefore - projectedDays;
 
     let note = '';
     if (!quota) {
@@ -327,12 +414,13 @@ export default function LeaveRequestDetailPage({
     } else if (isQuotaPending) {
       note = `Status ON_PROGRESS: kuota belum dipotong. Jika pengajuan disetujui, sisa menjadi ${remainingAfter} hari.`;
     } else {
-      note = `Status ${requestDetail.status}: kuota sudah terpotong ${requestDetail.totalDays} hari untuk pengajuan ini.`;
+      note = `Status ${requestDetail.status}: kuota sudah terpotong ${daysForType} hari untuk pengajuan ini.`;
     }
 
     return {
       typeId: rt.leaveType.id,
       name: rt.leaveType.name,
+      days: daysForType,
       totalQuota: quota ? quota.totalQuota : null,
       usedQuota: quota ? quota.usedQuota : null,
       remainingBefore,
@@ -345,6 +433,11 @@ export default function LeaveRequestDetailPage({
   });
 
   const primaryQuota = quotaRows[0];
+  const calendarRanges = segmentRows.map((row) => ({
+    startDate: row.startDate,
+    endDate: row.endDate,
+  }));
+
 
 
 
@@ -542,7 +635,61 @@ export default function LeaveRequestDetailPage({
             </div>
           </div>
 
-          {/* Section 2: Detail Jenis Cuti */}
+          {/* Section 2: Daftar Rentang Tanggal (multi-rentang) */}
+          <div className="w-full space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <h3 className="text-xs font-black uppercase tracking-wider text-indigo-700 flex items-center gap-2">
+                <CalendarRange className="w-4 h-4 text-indigo-600" /> Daftar Rentang Tanggal
+              </h3>
+              <span
+                data-testid="detail-segment-summary"
+                className="text-xs font-extrabold text-indigo-900 bg-indigo-100 px-3 py-1 rounded-lg border border-indigo-200"
+              >
+                {segmentRows.length} rentang · total {requestDetail.totalDays} hari kerja
+              </span>
+            </div>
+
+            <div className="overflow-x-auto rounded-2xl border border-slate-200 bg-white">
+              <table className="w-full text-xs">
+                <thead className="bg-slate-50 text-slate-600">
+                  <tr>
+                    <th className="px-3 py-2.5 text-left font-black uppercase tracking-wider w-12">No</th>
+                    <th className="px-3 py-2.5 text-left font-black uppercase tracking-wider">Jenis Cuti</th>
+                    <th className="px-3 py-2.5 text-left font-black uppercase tracking-wider">Tanggal Mulai</th>
+                    <th className="px-3 py-2.5 text-left font-black uppercase tracking-wider">Tanggal Selesai</th>
+                    <th className="px-3 py-2.5 text-right font-black uppercase tracking-wider">Hari</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {segmentRows.map((row) => (
+                    <tr
+                      key={`${row.no}-${row.typeId}-${row.startDate}`}
+                      data-testid={`detail-segment-${row.no}`}
+                      className="border-t border-slate-100"
+                    >
+                      <td className="px-3 py-2 font-bold text-slate-500">{row.no}</td>
+                      <td className="px-3 py-2 font-extrabold text-slate-900">{row.typeName}</td>
+                      <td className="px-3 py-2 font-semibold text-slate-800">{formatDate(row.startDate)}</td>
+                      <td className="px-3 py-2 font-semibold text-slate-800">{formatDate(row.endDate)}</td>
+                      <td className="px-3 py-2 text-right font-black text-indigo-800">{row.days} hari</td>
+                    </tr>
+                  ))}
+                </tbody>
+                <tfoot>
+                  <tr className="border-t border-slate-200 bg-indigo-50/60">
+                    <td colSpan={4} className="px-3 py-2 text-right font-black text-slate-700 uppercase tracking-wider">
+                      Total Hari Kerja
+                    </td>
+                    <td className="px-3 py-2 text-right font-black text-indigo-900">
+                      {requestDetail.totalDays} hari
+                    </td>
+                  </tr>
+                </tfoot>
+              </table>
+            </div>
+          </div>
+
+          {/* Section 3: Detail Jenis Cuti */}
           <div className="w-full space-y-4">
             <h3 className="text-xs font-black uppercase tracking-wider text-indigo-700 mb-4 flex items-center gap-2">
               <FileText className="w-4 h-4 text-indigo-600" /> Detail Jenis Cuti & Ketentuan
@@ -553,20 +700,33 @@ export default function LeaveRequestDetailPage({
                 <span className="text-xs font-bold text-indigo-700 uppercase tracking-wider">
                   Jenis Cuti Terpilih
                 </span>
-                <h4 className="text-lg font-black text-indigo-950 mt-0.5">
-                  {leaveType?.name || 'Cuti'}
-                </h4>
-                <p className="text-xs text-slate-600 mt-1">
+                <div className="flex flex-wrap items-center gap-2 mt-1">
+                  {quotaRows.length === 0 ? (
+                    <h4 className="text-lg font-black text-indigo-950">{leaveType?.name || 'Cuti'}</h4>
+                  ) : (
+                    quotaRows.map((row) => (
+                      <h4
+                        key={row.typeId}
+                        className="text-base font-black text-indigo-950 bg-white border border-indigo-200 px-3 py-1 rounded-lg"
+                      >
+                        {row.name}
+                      </h4>
+                    ))
+                  )}
+                </div>
+                <p className="text-xs text-slate-600 mt-1.5">
                   Kategori: <strong>{leaveType?.category === 'CUTI' ? 'Cuti Resmi' : 'Izin Meninggalkan'}</strong> • Ketentuan: <strong>{leaveType?.daysDescription || 'Hari Kerja'}</strong>
                 </p>
               </div>
 
               <div className="bg-white px-4 py-2.5 rounded-xl border border-indigo-200 shadow-2xs text-right">
                 <span className="text-[11px] text-slate-500 font-semibold block">
-                  Total Kuota {primaryQuota?.name || 'Jenis Cuti Ini'}
+                  {quotaRows.length > 1 ? 'Jenis Cuti Dipakai' : `Total Kuota ${primaryQuota?.name || 'Jenis Cuti Ini'}`}
                 </span>
                 <span className="text-base font-black text-indigo-900">
-                  {primaryQuota
+                  {quotaRows.length > 1
+                    ? `${quotaRows.length} jenis`
+                    : primaryQuota
                     ? primaryQuota.isUnlimited
                       ? 'Tidak dibatasi'
                       : primaryQuota.hasQuota
@@ -602,9 +762,14 @@ export default function LeaveRequestDetailPage({
                   >
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <span className="text-xs font-extrabold text-slate-900">{row.name}</span>
-                      <span className="text-[11px] font-bold text-indigo-800 bg-indigo-50 border border-indigo-200 px-2 py-0.5 rounded-md">
-                        Tahun {typeQuotas[row.typeId]?.year ?? startDateStr.slice(0, 4)}
-                      </span>
+                      <div className="flex items-center gap-2">
+                        <span className="text-[11px] font-bold text-indigo-800 bg-indigo-50 border border-indigo-200 px-2 py-0.5 rounded-md">
+                          Pengajuan ini: {row.days} hari
+                        </span>
+                        <span className="text-[11px] font-bold text-slate-600 bg-slate-100 border border-slate-200 px-2 py-0.5 rounded-md">
+                          Tahun {typeQuotas[row.typeId]?.year ?? startDateStr.slice(0, 4)}
+                        </span>
+                      </div>
                     </div>
 
                     <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
@@ -689,22 +854,20 @@ export default function LeaveRequestDetailPage({
             </div>
           </div>
 
-          {/* Section 3: Interactive Visual Calendar & Calculation */}
+          {/* Section 4: Kalender semua rentang & perhitungan */}
           <div className="w-full space-y-4">
-            <div className="flex items-center justify-between">
+            <div className="flex flex-wrap items-center justify-between gap-2">
               <h3 className="text-xs font-black uppercase tracking-wider text-indigo-700 flex items-center gap-2">
                 <Calendar className="w-4 h-4 text-indigo-600" /> Periode Tanggal Pada Kalender
               </h3>
               <span className="text-xs font-extrabold text-indigo-900 bg-indigo-100 px-3 py-1 rounded-lg border border-indigo-200">
-                {formatDate(startDateStr)} — {formatDate(endDateStr)}
+                {segmentRows.length} rentang · {formatDate(startDateStr)} — {formatDate(endDateStr)}
               </span>
             </div>
 
-            {/* Visual Calendar Component */}
+            {/* Visual Calendar Component — menandai gabungan semua rentang */}
             <CalendarRangePicker
-              startDate={startDateStr}
-              endDate={endDateStr}
-              onRangeChange={() => {}}
+              ranges={calendarRanges}
               holidays={allHolidays}
               bookedDates={userBookedDates}
             />
@@ -720,13 +883,15 @@ export default function LeaveRequestDetailPage({
                     Total Durasi Cuti Disetujui
                   </h4>
                   <p className="text-xs text-indigo-100 font-medium">
-                    Jumlah hari kerja efektif yang memotong kuota cuti karyawan
+                    Akumulasi hari kerja efektif dari {segmentRows.length} rentang tanggal
                   </p>
                 </div>
               </div>
 
               <div className="flex items-baseline gap-2 bg-white text-indigo-950 px-6 py-2.5 rounded-xl font-black shadow-sm">
-                <span className="text-3xl font-black text-indigo-600">{requestDetail.totalDays}</span>
+                <span data-testid="detail-total-days" className="text-3xl font-black text-indigo-600">
+                  {requestDetail.totalDays}
+                </span>
                 <span className="text-base font-extrabold text-slate-800">Hari Kerja</span>
               </div>
             </div>
@@ -845,34 +1010,88 @@ export default function LeaveRequestDetailPage({
           const nama = userObj.name;
           const unit = userObj.workUnit || 'Joint Development Digitalisasi Aplikasi HCO';
           const esc = (s: string) => (s || '').replace(/[&<>"']/g, m => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[m] as string));
-          const stn = selectedTypeName;
-          const sd = stn.includes('tahunan') ? formatDate(startDateStr) : '';
-          const ed = stn.includes('tahunan') ? formatDate(endDateStr) : '';
 
-          const x = (match: string) => stn.includes(match) ? 'x' : '';
-          const xExact = (match: string) => stn === match ? 'x' : '';
-          const d = (match: string) => stn.includes(match) ? formatDate(startDateStr) : '';
-          const de = (match: string) => stn.includes(match) ? formatDate(endDateStr) : '';
-          const dExact = (match: string) => stn === match ? formatDate(startDateStr) : '';
-          const deExact = (match: string) => stn === match ? formatDate(endDateStr) : '';
+          // ---- Semua jenis cuti & rentang tanggal yang dipakai pengajuan ini ----
+          // Sumber utama: segments[] (multi-rentang). Pengajuan lama tanpa segments memakai rentang tunggal.
+          const usedTypesMap = new Map<
+            string,
+            {
+              typeId: string;
+              name: string;
+              days: number;
+              ranges: Array<{ startDate: string; endDate: string }>;
+            }
+          >();
+          (requestDetail.segments ?? []).forEach((segment) => {
+            const typeId = segment.leaveTypeId;
+            const typeName =
+              segment.leaveType?.name ||
+              requestDetail.requestTypes?.find((rt) => rt.leaveType.id === typeId)?.leaveType.name ||
+              'Jenis cuti';
+            const entry = usedTypesMap.get(typeId) ?? { typeId, name: typeName, days: 0, ranges: [] };
+            entry.days += Number(segment.totalDays) || 0;
+            entry.ranges.push({
+              startDate: String(segment.startDate).split('T')[0],
+              endDate: String(segment.endDate).split('T')[0],
+            });
+            usedTypesMap.set(typeId, entry);
+          });
+          const usedTypes =
+            usedTypesMap.size > 0
+              ? Array.from(usedTypesMap.values())
+              : (requestDetail.requestTypes ?? []).map((rt) => ({
+                  typeId: rt.leaveType.id,
+                  name: rt.leaveType.name,
+                  days: requestDetail.totalDays,
+                  ranges: [{ startDate: startDateStr, endDate: endDateStr }],
+                }));
 
-          // Left table rows for Cuti
+          const rangeText = (r: { startDate: string; endDate: string }) =>
+            `${formatDate(r.startDate)} - ${formatDate(r.endDate)}`;
+
+          /**
+           * Tanda x + tanggal pelaksanaan untuk satu baris jenis cuti.
+           * Bila satu jenis dipakai di beberapa rentang, semua rentang ditulis dalam satu sel
+           * (mis. "01/10/2026 - 03/10/2026; 10/10/2026 - 11/10/2026").
+           */
+          const dateCells = (predicate: (name: string) => boolean) => {
+            const ranges = usedTypes
+              .filter((t) => predicate(t.name.toLowerCase()))
+              .flatMap((t) => t.ranges);
+            if (ranges.length === 0) return { mark: '', mulai: '', sampai: '', combined: '' };
+            if (ranges.length === 1) {
+              return {
+                mark: 'x',
+                mulai: formatDate(ranges[0].startDate),
+                sampai: formatDate(ranges[0].endDate),
+                combined: '',
+              };
+            }
+            return { mark: 'x', mulai: '', sampai: '', combined: ranges.map(rangeText).join('; ') };
+          };
+
+          const inc = (match: string) => (name: string) => name.includes(match);
+          const exact = (match: string) => (name: string) => name === match;
+          const khitananBaptis = (name: string) => name.includes('khitanan') || name.includes('baptis');
+
+          // Baris tabel Cuti
           const cutiRows = [
-            [x('tahunan'), 'Cuti tahunan', d('tahunan'), de('tahunan')],
-            [xExact('cuti gugur kandungan'), 'Cuti gugur kandungan (45 hari kalender)', dExact('cuti gugur kandungan'), deExact('cuti gugur kandungan')],
-            [xExact('cuti bersalin'), 'Cuti bersalin (3 bulan kalender)', dExact('cuti bersalin'), deExact('cuti bersalin')],
-            [x('keadaan khusus'), 'Cuti bersalin dengan keadaan khusus (3 bulan kalender)', d('keadaan khusus'), de('keadaan khusus')],
-            [x('ibadah'), 'Cuti melaksanakan ibadah wajib keagamaan (sesuai ketentuan Agama/Pemerintah)', d('ibadah'), de('ibadah')],
-            [x('pinjam'), 'Pinjam Cuti', d('pinjam'), de('pinjam')],
+            { label: 'Cuti tahunan', ...dateCells(inc('tahunan')) },
+            { label: 'Cuti gugur kandungan (45 hari kalender)', ...dateCells(exact('cuti gugur kandungan')) },
+            { label: 'Cuti bersalin (3 bulan kalender)', ...dateCells(exact('cuti bersalin')) },
+            { label: 'Cuti bersalin dengan keadaan khusus (3 bulan kalender)', ...dateCells(inc('keadaan khusus')) },
+            { label: 'Cuti melaksanakan ibadah wajib keagamaan (sesuai ketentuan Agama/Pemerintah)', ...dateCells(inc('ibadah')) },
+            { label: 'Pinjam Cuti', ...dateCells(inc('pinjam')) },
           ];
 
+          // Baris tabel Izin Meninggalkan
           const izinRows = [
-            [x('pernikahan pekerja'), 'Pernikahan Pekerja (3 hari kerja)', d('pernikahan pekerja'), de('pernikahan pekerja')],
-            [x('pernikahan anak'), 'Pernikahan Anak (2 hari kerja)', d('pernikahan anak'), de('pernikahan anak')],
-            [stn.includes('khitanan') || stn.includes('baptis') ? 'x' : '', 'Khitanan/pembaptisan Anak (2 hari kerja)', stn.includes('khitanan') || stn.includes('baptis') ? formatDate(startDateStr) : '', stn.includes('khitanan') || stn.includes('baptis') ? formatDate(endDateStr) : ''],
-            [x('istri melahirkan'), 'Istri melahirkan/keguguran (2 hari kerja)', d('istri melahirkan'), de('istri melahirkan')],
-            [x('keluarga inti meninggal'), 'Keluarga Inti meninggal (Suami/Istri/Orang Tua/Mertua/Anak) (2 hari kerja)', d('keluarga inti meninggal'), de('keluarga inti meninggal')],
-            [x('anggota keluarga'), 'Anggota keluarga dalam satu rumah meninggal (1 hari kerja)', d('anggota keluarga'), de('anggota keluarga')],
+            { label: 'Pernikahan Pekerja (3 hari kerja)', ...dateCells(inc('pernikahan pekerja')) },
+            { label: 'Pernikahan Anak (2 hari kerja)', ...dateCells(inc('pernikahan anak')) },
+            { label: 'Khitanan/pembaptisan Anak (2 hari kerja)', ...dateCells(khitananBaptis) },
+            { label: 'Istri melahirkan/keguguran (2 hari kerja)', ...dateCells(inc('istri melahirkan')) },
+            { label: 'Keluarga Inti meninggal (Suami/Istri/Orang Tua/Mertua/Anak) (2 hari kerja)', ...dateCells(inc('keluarga inti meninggal')) },
+            { label: 'Anggota keluarga dalam satu rumah meninggal (1 hari kerja)', ...dateCells(inc('anggota keluarga')) },
           ];
 
           const c = 'border-right:1px solid #000!important;border-bottom:1px solid #000!important;border-top:0!important;border-left:0!important;empty-cells:show!important;box-sizing:border-box!important;';
@@ -883,30 +1102,33 @@ export default function LeaveRequestDetailPage({
           const dCell = `${c}width:105px;text-align:center;padding:2px;font-size:9px;vertical-align:middle;`;
           const mCell = `${c}width:105px;padding:3px;text-align:center;font-size:10px;background-color:#002060;color:#fff;font-weight:bold;-webkit-print-color-adjust:exact;print-color-adjust:exact;vertical-align:middle;`;
 
-          const cutiRowsHtml = cutiRows.map(r => `<tr style="height:20px"><td style="${xCell}">${r[0] || '&nbsp;'}</td><td style="${tCell}">${r[1]}</td><td style="${dCell}">${r[2] || '&nbsp;'}</td><td style="${dCell}">${r[3] || '&nbsp;'}</td></tr>`).join('');
-          const izinRowsHtml = izinRows.map(r => `<tr style="height:20px"><td style="${xCell}">${r[0] || '&nbsp;'}</td><td style="${tCell}">${r[1]}</td><td style="${dCell}">${r[2] || '&nbsp;'}</td><td style="${dCell}">${r[3] || '&nbsp;'}</td></tr>`).join('');
+          // Baris tabel: satu sel tanggal bila hanya 1 rentang, sel gabungan (colspan) bila beberapa rentang.
+          const rowHtml = (r: { mark: string; label: string; mulai: string; sampai: string; combined: string }) =>
+            r.combined
+              ? `<tr style="height:20px"><td style="${xCell}">${r.mark || '&nbsp;'}</td><td style="${tCell}">${r.label}</td><td colspan="2" style="${dCell}width:auto">${r.combined}</td></tr>`
+              : `<tr style="height:20px"><td style="${xCell}">${r.mark || '&nbsp;'}</td><td style="${tCell}">${r.label}</td><td style="${dCell}">${r.mulai || '&nbsp;'}</td><td style="${dCell}">${r.sampai || '&nbsp;'}</td></tr>`;
+
+          const cutiRowsHtml = cutiRows.map(rowHtml).join('');
+          const izinRowsHtml = izinRows.map(rowHtml).join('');
 
           // ---- RINCIAN KUOTA PER JENIS CUTI (tabel UserLeaveQuota, bukan LeaveQuota generik) ----
-          // - APPROVED/DONE      : usedQuota sudah memuat pengajuan ini -> kuota terpakai SEBELUM = usedQuota - hari pengajuan ini.
+          // - APPROVED/DONE      : usedQuota sudah memuat pengajuan ini -> kuota terpakai SEBELUM = usedQuota - hari jenis itu.
           // - ON_PROGRESS        : kuota belum dipotong -> sisa sesudah = proyeksi (sisa sebelum - hari diajukan).
           // - REJECTED/CANCELLED : kuota tidak terpotong -> sisa sesudah = sisa sebelum.
           const isCut = requestDetail.status === 'APPROVED' || requestDetail.status === 'DONE';
           const isVoid = requestDetail.status === 'REJECTED' || requestDetail.status === 'CANCELLED';
-          const segs = requestDetail.segments ?? [];
 
-          const quotaPrint = (requestDetail.requestTypes ?? []).map(rt => {
-            const q = typeQuotas[rt.leaveType.id];
-            const segDays = segs
-              .filter(s => s.leaveTypeId === rt.leaveType.id)
-              .reduce((acc, s) => acc + (Number(s.totalDays) || 0), 0);
-            const days = segs.length > 0 ? segDays : requestDetail.totalDays;
+          // Satu baris per jenis cuti yang dipakai, dengan total hari jenis itu.
+          const quotaPrint = usedTypes.map((used) => {
+            const q = typeQuotas[used.typeId];
+            const days = used.days;
             const unlimited = !!q && q.totalQuota >= 999;
             const usedBefore = q ? (isCut ? q.usedQuota - days : q.usedQuota) : null;
             const before = q && usedBefore !== null ? q.totalQuota - usedBefore : null;
             const after = before === null ? null : isVoid ? before : before - days;
 
             return {
-              name: rt.leaveType.name,
+              name: used.name,
               days,
               total: q ? q.totalQuota : null,
               usedBefore,
@@ -917,37 +1139,50 @@ export default function LeaveRequestDetailPage({
             };
           });
 
-          const quotaCell = `${c}padding:2px 6px;vertical-align:middle;font-size:10px;`;
-          const quotaLabel = `${quotaCell}width:58%;`;
-          const quotaValue = `${quotaCell}font-weight:bold;`;
+          const quotaCell = `${c}padding:2px 5px;vertical-align:middle;font-size:9.5px;`;
           const quotaHari = (v: number | null) => (v === null ? 'Sesuai Ketentuan' : `${v} hari`);
 
-          const quotaPrintHtml = quotaPrint.map((row) => {
-            const noQuota = row.missing || row.unlimited;
-            const totalTxt = row.missing ? 'Sesuai Ketentuan' : row.unlimited ? 'Tidak dibatasi' : `${row.total} hari`;
-            const usedTxt = noQuota ? totalTxt : quotaHari(row.usedBefore);
-            const beforeTxt = noQuota ? totalTxt : quotaHari(row.before);
-            const isOver = !noQuota && row.after !== null && row.after < 0;
-            const afterTxt = noQuota
-              ? totalTxt
-              : `${quotaHari(row.after)}${isOver ? ' (melebihi kuota)' : ''}`;
+          const quotaPrintHtml = quotaPrint
+            .map((row) => {
+              const noQuota = row.missing || row.unlimited;
+              const totalTxt = row.missing
+                ? 'Sesuai Ketentuan'
+                : row.unlimited
+                ? 'Tidak dibatasi'
+                : `${row.total} hari`;
+              const usedTxt = noQuota ? totalTxt : quotaHari(row.usedBefore);
+              const beforeTxt = noQuota ? totalTxt : quotaHari(row.before);
+              const isOver = !noQuota && row.after !== null && row.after < 0;
+              const afterTxt = noQuota
+                ? totalTxt
+                : `${quotaHari(row.after)}${isOver ? ' (melebihi kuota)' : ''}`;
 
-            const note = isVoid
-              ? `Kuota tidak terpotong (pengajuan ${requestDetail.status})`
-              : row.missing
-              ? 'Jenis cuti ini belum memiliki data kuota pada tahun pengajuan (sesuai ketentuan).'
-              : row.unlimited
-              ? 'Jenis cuti ini tidak dibatasi kuota.'
-              : '';
+              return `<tr style="height:16px">
+          <td style="${quotaCell}font-weight:bold">${esc(row.name)}</td>
+          <td style="${quotaCell}text-align:center;font-weight:bold">${row.days} hari</td>
+          <td style="${quotaCell}text-align:center">${usedTxt}</td>
+          <td style="${quotaCell}text-align:center">${beforeTxt}</td>
+          <td style="${quotaCell}text-align:center;font-weight:bold${isOver ? ';color:#B00020' : ''}">${afterTxt}</td>
+        </tr>`;
+            })
+            .join('');
 
-            return `
-        <tr style="height:17px"><td style="${quotaLabel}">Jenis Cuti</td><td style="${quotaValue}">${esc(row.name)}</td></tr>
-        <tr style="height:17px"><td style="${quotaLabel}">Jumlah Hari Diajukan</td><td style="${quotaValue}">${row.days} hari</td></tr>
-        <tr style="height:17px"><td style="${quotaLabel}">Kuota Terpakai (sebelum pengajuan ini)</td><td style="${quotaValue}">${usedTxt}</td></tr>
-        <tr style="height:17px"><td style="${quotaLabel}">Sisa Kuota Sebelum</td><td style="${quotaValue}">${beforeTxt}</td></tr>
-        <tr style="height:17px"><td style="${quotaLabel}"><strong>Sisa Kuota Sesudah</strong></td><td style="${quotaValue}${isOver ? 'color:#B00020;' : ''}">${afterTxt}</td></tr>
-        ${note ? `<tr><td colspan="2" style="${c}padding:2px 6px;font-size:9px;font-style:italic;">${esc(note)}</td></tr>` : ''}`;
-          }).join('');
+          // Catatan tambahan (hanya bila relevan) supaya tetap ringkas & muat 1 halaman.
+          const quotaNotes: string[] = [];
+          if (isVoid) {
+            quotaNotes.push(`Pengajuan ${requestDetail.status}: kuota tidak terpotong.`);
+          }
+          if (quotaPrint.some((row) => row.missing)) {
+            quotaNotes.push('Jenis cuti tanpa data kuota mengikuti ketentuan HR.');
+          }
+          if (quotaPrint.some((row) => row.unlimited)) {
+            quotaNotes.push('Jenis cuti dengan kuota "Tidak dibatasi" tidak memotong kuota tahunan.');
+          }
+          const quotaNotesHtml = quotaNotes.length
+            ? `<tr><td colspan="5" style="${c}padding:2px 5px;font-size:9px;font-style:italic;">${esc(
+                quotaNotes.join(' ')
+              )}</td></tr>`
+            : '';
 
           return `
 <style>
@@ -995,13 +1230,20 @@ export default function LeaveRequestDetailPage({
     </table>
   </div>
   <div style="margin-top:8px;page-break-inside:avoid">
-    <table class="grid-table" cellspacing="0" cellpadding="0" style="width:100%;border-collapse:separate!important;border-spacing:0!important;font-size:10px;border-top:1px solid #000!important;border-left:1px solid #000!important">
+    <table class="grid-table" cellspacing="0" cellpadding="0" style="width:100%;border-collapse:separate!important;border-spacing:0!important;font-size:9.5px;border-top:1px solid #000!important;border-left:1px solid #000!important">
       <thead>
         <tr>
-          <th colspan="2" style="${hdr}padding:3px;">RINCIAN KUOTA CUTI</th>
+          <th colspan="5" style="${hdr}padding:3px;">RINCIAN KUOTA CUTI</th>
+        </tr>
+        <tr>
+          <th style="${sub}text-align:left;width:36%;">Jenis Cuti</th>
+          <th style="${sub}width:13%;">Jumlah Hari</th>
+          <th style="${sub}width:17%;">Kuota Terpakai (sebelum)</th>
+          <th style="${sub}width:15%;">Sisa Sebelum</th>
+          <th style="${sub}width:19%;">Sisa Sesudah</th>
         </tr>
       </thead>
-      <tbody>${quotaPrintHtml}
+      <tbody>${quotaPrintHtml}${quotaNotesHtml}
       </tbody>
     </table>
   </div>
