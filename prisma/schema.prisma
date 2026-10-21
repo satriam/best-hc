@@ -114,6 +114,7 @@ model LeaveType {
   requestTypes    LeaveRequestType[]
   userLeaveQuotas UserLeaveQuota[]
   segments        LeaveRequestSegment[]
+  quotaHistories  LeaveQuotaHistory[]
 
   @@map("leave_types")
 }
@@ -181,6 +182,7 @@ model LeaveQuotaHistory {
   id             String           @id @default(uuid())
   userId         String
   leaveRequestId String?
+  leaveTypeId    String?
   previousQuota  Int
   changeAmount   Int
   newQuota       Int
@@ -190,7 +192,10 @@ model LeaveQuotaHistory {
 
   user           User             @relation(fields: [userId], references: [id], onDelete: Cascade)
   leaveRequest   LeaveRequest?    @relation(fields: [leaveRequestId], references: [id], onDelete: SetNull)
+  leaveType      LeaveType?       @relation(fields: [leaveTypeId], references: [id], onDelete: SetNull)
 
+  @@index([leaveRequestId])
+  @@index([userId, leaveTypeId])
   @@map("leave_quota_histories")
 }
 
