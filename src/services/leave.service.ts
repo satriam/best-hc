@@ -1,5 +1,5 @@
 import { prisma } from '@/lib/db';
-import { LeaveStatus, QuotaHistoryType, CalculationType } from '@prisma/client';
+import { LeaveStatus, QuotaHistoryType, CalculationType, Prisma } from '@prisma/client';
 import { calculateLeaveDays } from '@/lib/calculation';
 import { getHolidayDatesSet } from '@/services/holiday.service';
 import { CreateLeaveRequestPayload, formatDateId, rangesOverlap } from '@/schemas/leave.schema';
@@ -501,6 +501,7 @@ export async function updateLeaveRequest(
             data: {
               userId: existing.userId,
               leaveRequestId: existing.id,
+              leaveTypeId,
               previousQuota: remaining,
               changeAmount: -diff,
               newQuota: remaining - diff,
@@ -645,6 +646,7 @@ export async function updateLeaveStatus(
           data: {
             userId,
             leaveRequestId: request.id,
+            leaveTypeId: group.leaveTypeId,
             previousQuota: remaining,
             changeAmount: -group.days,
             newQuota: remaining - group.days,
@@ -674,10 +676,15 @@ export async function updateLeaveStatus(
           data: { usedQuota: userQuota.usedQuota + annualDays },
         });
 
+        // Baris sinkronisasi kuota tahunan generik (tabel LeaveQuota lama).
+        // `leaveTypeId` sengaja NULL: hari Cuti Tahunan sudah tercatat pada baris
+        // per jenis cuti di atas (UserLeaveQuota). Kalau baris ini diberi jenis cuti,
+        // rincian kuota per pengajuan akan menghitung hari yang sama dua kali.
         await tx.leaveQuotaHistory.create({
           data: {
             userId,
             leaveRequestId: request.id,
+            leaveTypeId: null,
             previousQuota: currentRemaining,
             changeAmount: -annualDays,
             newQuota: currentRemaining - annualDays,
@@ -714,6 +721,7 @@ export async function updateLeaveStatus(
           data: {
             userId,
             leaveRequestId: request.id,
+            leaveTypeId: group.leaveTypeId,
             previousQuota: remaining,
             changeAmount: group.days,
             newQuota: remaining + group.days,
@@ -738,10 +746,12 @@ export async function updateLeaveStatus(
           data: { usedQuota: Math.max(0, userQuota.usedQuota - annualDays) },
         });
 
+        // Sinkronisasi kuota tahunan generik — `leaveTypeId` NULL (lihat catatan di alur potong kuota).
         await tx.leaveQuotaHistory.create({
           data: {
             userId,
             leaveRequestId: request.id,
+            leaveTypeId: null,
             previousQuota: currentRemaining,
             changeAmount: annualDays,
             newQuota: currentRemaining + annualDays,
@@ -756,7 +766,7 @@ export async function updateLeaveStatus(
     return tx.leaveRequest.update({
       where: { id: requestId },
       data: {
-        status: newStatus as any,
+        status: newStatus,
         adminNote: adminNote !== undefined ? adminNote : request.adminNote,
       },
       include: {
@@ -822,6 +832,7 @@ export async function deleteLeaveRequest(requestId: string, userId: string, isAd
           data: {
             userId: request.userId,
             leaveRequestId: null, // Histori tetap disimpan walau pengajuan dihapus
+            leaveTypeId: group.leaveTypeId,
             previousQuota: remaining,
             changeAmount: group.days,
             newQuota: remaining + group.days,
@@ -850,6 +861,7 @@ export async function deleteLeaveRequest(requestId: string, userId: string, isAd
           data: {
             userId: request.userId,
             leaveRequestId: null,
+            leaveTypeId: null, // sinkronisasi kuota tahunan generik, bukan kuota per jenis cuti
             previousQuota: currentRemaining,
             changeAmount: annualDays,
             newQuota: currentRemaining + annualDays,
@@ -867,8 +879,252 @@ export async function deleteLeaveRequest(requestId: string, userId: string, isAd
   });
 }
 
+/** Rincian kuota satu jenis cuti pada satu pengajuan. */
+export interface QuotaInfoPerType {
+  leaveTypeId: string;
+  leaveTypeName: string;
+  /** Total hari jenis cuti ini pada pengajuan (dari `segments`). */
+  daysRequested: number;
+  /** Sisa kuota SEBELUM pengajuan ini (snapshot history). null = tak terbatas / tidak diketahui. */
+  previousRemaining: number | null;
+  /** Hari yang benar-benar dipotong oleh pengajuan ini. */
+  usedByThisRequest: number;
+  /** Sisa kuota SETELAH pengajuan ini (snapshot history). null = tak terbatas / tidak diketahui. */
+  remainingAfter: number | null;
+  /** Sisa kuota SEKARANG (live dari `UserLeaveQuota`). null = tak terbatas (>= 999) / belum ada kuota. */
+  currentRemaining: number | null;
+}
+
+export interface QuotaInfo {
+  perType: QuotaInfoPerType[];
+  totalDaysRequested: number;
+  totalUsedByThisRequest: number;
+  /** false = pengajuan ini belum/tidak memotong kuota (ON_PROGRESS / REJECTED / CANCELLED). */
+  statusAffectsQuota: boolean;
+}
+
+interface QuotaInfoSegment {
+  leaveTypeId: string;
+  startDate: Date;
+  endDate: Date;
+  totalDays: number;
+  leaveType?: { id: string; name: string } | null;
+}
+
+interface QuotaInfoRequest {
+  id: string;
+  userId: string;
+  status: LeaveStatus;
+  startDate: Date;
+  endDate: Date;
+  totalDays: number;
+  segments: QuotaInfoSegment[];
+  requestTypes: Array<{ leaveTypeId: string; leaveType?: { id: string; name: string } | null }>;
+}
+
+interface QuotaHistoryRow {
+  leaveRequestId: string | null;
+  leaveTypeId: string | null;
+  previousQuota: number;
+  changeAmount: number;
+  newQuota: number;
+  createdAt: Date;
+  leaveType: { id: string; name: string } | null;
+}
+
+interface QuotaSnapshotRow {
+  totalQuota: number;
+  usedQuota: number;
+}
+
+/**
+ * Agregasi hari per jenis cuti beserta tahun-tahun yang terpakai.
+ * Sumber utama `segments`; data lama tanpa segments memakai `requestTypes` + `totalDays`.
+ */
+function collectDaysAndYears(req: QuotaInfoRequest) {
+  const days = new Map<string, number>();
+  const years = new Map<string, Set<number>>();
+  const names = new Map<string, string>();
+
+  const add = (leaveTypeId: string, dayCount: number, year: number, name?: string | null) => {
+    days.set(leaveTypeId, (days.get(leaveTypeId) ?? 0) + dayCount);
+    const set = years.get(leaveTypeId) ?? new Set<number>();
+    set.add(year);
+    years.set(leaveTypeId, set);
+    if (name) names.set(leaveTypeId, name);
+  };
+
+  if (req.segments.length > 0) {
+    for (const segment of req.segments) {
+      add(segment.leaveTypeId, segment.totalDays, segment.startDate.getFullYear(), segment.leaveType?.name);
+    }
+  } else {
+    // Data lama tanpa segments: `totalDays` hanya pasti untuk satu jenis cuti,
+    // jadi dibebankan ke jenis pertama dan sisanya 0 hari.
+    req.requestTypes.forEach((requestType, index) => {
+      add(
+        requestType.leaveTypeId,
+        index === 0 ? req.totalDays : 0,
+        req.startDate.getFullYear(),
+        requestType.leaveType?.name
+      );
+    });
+  }
+
+  return { days, years, names };
+}
+
+/** Sisa kuota live untuk satu jenis cuti (dijumlah lintas tahun kalau pengajuan melewati tahun). */
+function resolveCurrentRemaining(
+  userId: string,
+  leaveTypeId: string,
+  years: Set<number>,
+  quotaMap: Map<string, QuotaSnapshotRow>
+): { current: number | null; unlimited: boolean } {
+  let total = 0;
+  let found = false;
+
+  for (const year of years) {
+    const quota = quotaMap.get(`${userId}|${leaveTypeId}|${year}`);
+    if (!quota) continue;
+    if (quota.totalQuota >= UNLIMITED_QUOTA_THRESHOLD) {
+      return { current: null, unlimited: true };
+    }
+    total += quota.totalQuota - quota.usedQuota;
+    found = true;
+  }
+
+  return { current: found ? total : null, unlimited: false };
+}
+
+/**
+ * Tambahkan `quotaInfo` (rincian kuota per jenis cuti) ke setiap pengajuan.
+ * Hanya 2 query tambahan untuk seluruh daftar (tanpa N+1): semua baris
+ * `LeaveQuotaHistory` pengajuan-pengajuan itu + semua `UserLeaveQuota` user terkait,
+ * lalu dipetakan di memori.
+ */
+export async function attachQuotaInfo<T extends QuotaInfoRequest>(
+  requests: T[]
+): Promise<Array<T & { quotaInfo: QuotaInfo }>> {
+  if (requests.length === 0) return [];
+
+  const requestIds = requests.map((req) => req.id);
+  const userIds = unique(requests.map((req) => req.userId));
+
+  // Query 1: seluruh baris pemotongan kuota untuk pengajuan-pengajuan ini
+  const histories: QuotaHistoryRow[] = await prisma.leaveQuotaHistory.findMany({
+    where: {
+      leaveRequestId: { in: requestIds },
+      type: QuotaHistoryType.LEAVE_APPROVED,
+    },
+    select: {
+      leaveRequestId: true,
+      leaveTypeId: true,
+      previousQuota: true,
+      changeAmount: true,
+      newQuota: true,
+      createdAt: true,
+      leaveType: { select: { id: true, name: true } },
+    },
+    orderBy: { createdAt: 'asc' },
+  });
+
+  const yearSet = new Set<number>();
+  for (const req of requests) {
+    yearSet.add(req.startDate.getFullYear());
+    for (const segment of req.segments) yearSet.add(segment.startDate.getFullYear());
+  }
+
+  // Query 2: kuota live per jenis cuti untuk user & tahun yang relevan
+  const quotas = await prisma.userLeaveQuota.findMany({
+    where: { userId: { in: userIds }, year: { in: Array.from(yearSet) } },
+    select: { userId: true, leaveTypeId: true, year: true, totalQuota: true, usedQuota: true },
+  });
+
+  const quotaMap = new Map<string, QuotaSnapshotRow>(
+    quotas.map((quota) => [`${quota.userId}|${quota.leaveTypeId}|${quota.year}`, quota])
+  );
+
+  // Kelompokkan history per pengajuan per jenis cuti (urut createdAt asc dari query)
+  const historyByRequest = new Map<string, Map<string, QuotaHistoryRow[]>>();
+  for (const row of histories) {
+    if (!row.leaveRequestId || !row.leaveTypeId) continue;
+    const perRequest = historyByRequest.get(row.leaveRequestId) ?? new Map<string, QuotaHistoryRow[]>();
+    const rows = perRequest.get(row.leaveTypeId) ?? [];
+    rows.push(row);
+    perRequest.set(row.leaveTypeId, rows);
+    historyByRequest.set(row.leaveRequestId, perRequest);
+  }
+
+  return requests.map((req) => {
+    const { days, years, names } = collectDaysAndYears(req);
+    const historyMap = historyByRequest.get(req.id) ?? new Map<string, QuotaHistoryRow[]>();
+
+    // Jenis cuti yang hanya muncul di history (mis. pengajuan lama tanpa segments)
+    for (const [leaveTypeId, rows] of historyMap) {
+      if (days.has(leaveTypeId)) continue;
+      days.set(leaveTypeId, 0);
+      years.set(leaveTypeId, new Set<number>([req.startDate.getFullYear()]));
+      const name = rows[0]?.leaveType?.name;
+      if (name) names.set(leaveTypeId, name);
+    }
+
+    const perType: QuotaInfoPerType[] = [];
+    let statusAffectsQuota = false;
+
+    for (const [leaveTypeId, daysRequested] of days) {
+      const rows = historyMap.get(leaveTypeId) ?? [];
+      const { current, unlimited } = resolveCurrentRemaining(
+        req.userId,
+        leaveTypeId,
+        years.get(leaveTypeId) ?? new Set<number>(),
+        quotaMap
+      );
+
+      let previousRemaining: number | null = current;
+      let remainingAfter: number | null = current;
+      let usedByThisRequest = 0;
+
+      if (rows.length > 0) {
+        // Sudah memotong kuota: previousQuota dari baris paling awal,
+        // newQuota dari baris paling akhir, dan seluruh changeAmount dijumlahkan
+        // (mis. potong lalu dikembalikan sebagian).
+        statusAffectsQuota = true;
+        previousRemaining = rows[0].previousQuota;
+        remainingAfter = rows[rows.length - 1].newQuota;
+        usedByThisRequest = -rows.reduce((sum, row) => sum + row.changeAmount, 0);
+      }
+
+      if (unlimited) {
+        // Kuota tak terbatas (>= 999 hari): angka sisa tidak bermakna
+        previousRemaining = null;
+        remainingAfter = null;
+      }
+
+      perType.push({
+        leaveTypeId,
+        leaveTypeName: names.get(leaveTypeId) ?? 'Cuti',
+        daysRequested,
+        previousRemaining,
+        usedByThisRequest,
+        remainingAfter,
+        currentRemaining: current,
+      });
+    }
+
+    const quotaInfo: QuotaInfo = {
+      perType,
+      totalDaysRequested: perType.reduce((sum, item) => sum + item.daysRequested, 0),
+      totalUsedByThisRequest: perType.reduce((sum, item) => sum + item.usedByThisRequest, 0),
+      statusAffectsQuota,
+    };
+
+    return { ...req, quotaInfo };
+  });
+}
+
 export async function getLeaveRequests(options: LeaveFilterOptions = {}) {
-  const whereClause: any = {
+  const whereClause: Prisma.LeaveRequestWhereInput = {
     deletedAt: null,
   };
 
@@ -914,7 +1170,7 @@ export async function getLeaveRequests(options: LeaveFilterOptions = {}) {
     };
   }
 
-  return prisma.leaveRequest.findMany({
+  const requests = await prisma.leaveRequest.findMany({
     where: whereClause,
     include: {
       user: {
@@ -936,10 +1192,12 @@ export async function getLeaveRequests(options: LeaveFilterOptions = {}) {
     },
     orderBy: { createdAt: 'desc' },
   });
+
+  return attachQuotaInfo(requests);
 }
 
 export async function getLeaveRequestById(id: string) {
-  return prisma.leaveRequest.findFirst({
+  const request = await prisma.leaveRequest.findFirst({
     where: { id, deletedAt: null },
     include: {
       user: {
@@ -965,6 +1223,11 @@ export async function getLeaveRequestById(id: string) {
       },
     },
   });
+
+  if (!request) return null;
+
+  const [withQuotaInfo] = await attachQuotaInfo([request]);
+  return withQuotaInfo;
 }
 
 export async function getDashboardStats(userId?: string) {
