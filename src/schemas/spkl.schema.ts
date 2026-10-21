@@ -15,8 +15,15 @@ const dateSchema = (label: string) =>
 
 /** Satu baris rincian pekerja pada SPKL. `hours` diabaikan (selalu dihitung server). */
 export const spklItemSchema = z.object({
-  workerNik: z.string().trim().min(1, 'NIK pekerja wajib diisi'),
-  workerName: z.string().trim().min(1, 'Nama pekerja wajib diisi'),
+  /**
+   * User akun yang diwakili baris ini. Kalau diisi, server mengisi otomatis
+   * NIK/nama/jabatan dari data user (field manual tetap menang bila diisi).
+   * ADMIN: opsional. USER biasa: dipaksa ke user yang login (lihat service).
+   */
+  userId: z.string().uuid('ID user tidak valid').optional().nullable(),
+  /** Wajib diisi bila `userId` kosong; boleh kosong bila diisi dari data user. */
+  workerNik: z.string().trim().optional().nullable(),
+  workerName: z.string().trim().optional().nullable(),
   workerPosition: z.string().trim().optional().nullable(),
   company: z.string().trim().optional().nullable(),
   taskDescription: z.string().trim().min(1, 'Uraian tugas wajib diisi'),

@@ -2,6 +2,7 @@ import { z } from 'zod';
 
 export const createUserSchema = z.object({
   nip: z.string().optional().nullable(),
+  position: z.string().trim().max(200, 'Jabatan maksimal 200 karakter').optional().nullable(),
   workUnit: z.string().optional().nullable(),
   name: z.string().min(2, 'Nama minimal 2 karakter'),
   email: z.string().email('Email tidak valid'),
@@ -13,6 +14,7 @@ export const createUserSchema = z.object({
 
 export const updateUserSchema = z.object({
   nip: z.string().optional().nullable(),
+  position: z.string().trim().max(200, 'Jabatan maksimal 200 karakter').optional().nullable(),
   workUnit: z.string().optional().nullable(),
   name: z.string().min(2, 'Nama minimal 2 karakter').optional(),
   email: z.string().email('Email tidak valid').optional(),

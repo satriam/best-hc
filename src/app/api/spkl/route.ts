@@ -12,6 +12,11 @@ function parseEnumValue<T extends Record<string, string>>(enumObject: T, value: 
   return Object.values(enumObject).includes(upper as T[keyof T]) ? (upper as T[keyof T]) : undefined;
 }
 
+/** 403 untuk pelanggaran izin, 400 untuk kesalahan validasi (termasuk user tidak ditemukan). */
+function errorStatus(message: string): number {
+  return /forbidden/i.test(message) ? 403 : 400;
+}
+
 /** GET /api/spkl — USER hanya melihat miliknya (atau SPKL yang ia setujui), ADMIN semua. */
 export async function GET(request: Request) {
   const session = await getSession();
@@ -76,6 +81,6 @@ export async function POST(request: Request) {
     });
   } catch (error: unknown) {
     const { message, issues } = normalizeError(error, 'Gagal membuat SPKL');
-    return NextResponse.json({ success: false, message, issues }, { status: 400 });
+    return NextResponse.json({ success: false, message, issues }, { status: errorStatus(message) });
   }
 }

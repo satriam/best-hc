@@ -1,11 +1,23 @@
 import { NextResponse } from 'next/server';
 import { getSession } from '@/lib/auth';
-import { getAllUsers, createUser } from '@/services/user.service';
+import { getAllUsers, getUserOptions, createUser } from '@/services/user.service';
 import { createUserSchema } from '@/schemas/user.schema';
 
-export async function GET() {
+export async function GET(request: Request) {
   const session = await getSession();
-  if (!session || session.role !== 'ADMIN') {
+  if (!session) {
+    return NextResponse.json({ success: false, message: 'Unauthorized' }, { status: 401 });
+  }
+
+  // `?forSpkl=1` → daftar ringan (id, name, nip, position, workUnit) untuk
+  // auto-isi form SPKL. Aman untuk semua user yang login; tanpa data sensitif.
+  const { searchParams } = new URL(request.url);
+  if (searchParams.get('forSpkl') === '1') {
+    const options = await getUserOptions();
+    return NextResponse.json({ success: true, data: options });
+  }
+
+  if (session.role !== 'ADMIN') {
     return NextResponse.json({ success: false, message: 'Forbidden' }, { status: 403 });
   }
 

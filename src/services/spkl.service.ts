@@ -142,6 +142,8 @@ export function parseWorkDate(value: string | Date): Date {
 
 interface NormalizedItem {
   order: number;
+  /** User akun yang diwakili baris ini (null = pekerja manual). */
+  userId: string | null;
   workerNik: string;
   workerName: string;
   workerPosition: string | null;
@@ -154,6 +156,88 @@ interface NormalizedItem {
 }
 
 const DEFAULT_COMPANY = 'PT Bukit Energi Servis Terpadu';
+
+/**
+ * Tentukan user yang diwakili tiap baris rincian lalu isi NIK/nama/jabatan
+ * otomatis dari data user. Aturan (hasil revisi user):
+ *
+ * - **ADMIN**: `userId` opsional. Diisi → auto-isi dari `User` (nip/name/position);
+ *   kosong → baris murni manual (pekerja alih daya yang tidak punya akun).
+ * - **USER biasa**: nilai `userId` dari body TIDAK dipercaya. Kalau body mengirim
+ *   id user lain → 403. Kalau kosong → server memakai user yang login sebagai
+ *   sumber auto-isi.
+ * - **Field manual selalu menang**: NIK/nama/jabatan yang dikirim client tidak
+ *   ditimpa nilai dari user.
+ * - Baris yang seluruh field-nya manual tidak ditautkan ke user (jejak tetap bersih).
+ */
+async function resolveItemWorkers(items: SpklItemInput[], actor: SpklActor): Promise<SpklItemInput[]> {
+  const isAdmin = actor.role === Role.ADMIN;
+  const requestedIds = items.map((item) => item.userId?.trim() || null);
+
+  if (!isAdmin) {
+    const foreign = requestedIds.find((id) => id !== null && id !== actor.id);
+    if (foreign) {
+      throw new Error('Forbidden: hanya Admin yang boleh membuat SPKL untuk user lain');
+    }
+  }
+
+  // Sumber auto-isi per baris: id dari body (ADMIN) atau user yang login (USER).
+  const sourceIds = requestedIds.map((id) => (isAdmin ? id : actor.id));
+  const uniqueIds = Array.from(new Set(sourceIds.filter((id): id is string => Boolean(id))));
+
+  const users = uniqueIds.length
+    ? await prisma.user.findMany({
+        where: { id: { in: uniqueIds }, deletedAt: null },
+        select: { id: true, name: true, nip: true, position: true },
+      })
+    : [];
+
+  const byId = new Map(users.map((user) => [user.id, user]));
+
+  const notFound = uniqueIds.filter((id) => !byId.has(id));
+  if (notFound.length > 0) {
+    throw new Error(
+      `User karyawan tidak ditemukan untuk baris rincian: ${notFound.join(', ')} (periksa pilihan karyawan)`
+    );
+  }
+
+  return items.map((item, index) => {
+    const sourceId = sourceIds[index];
+    const user = sourceId ? byId.get(sourceId) : undefined;
+
+    const manualNik = item.workerNik?.trim() || '';
+    const manualName = item.workerName?.trim() || '';
+    const manualPosition = item.workerPosition?.trim() || '';
+
+    const workerNik = manualNik || user?.nip || '';
+    const workerName = manualName || user?.name || '';
+    const workerPosition = manualPosition || user?.position || '';
+
+    if (!workerNik) {
+      throw new Error(
+        `NIK pekerja baris ${index + 1} wajib diisi (data user ${user?.name ?? 'yang dipilih'} belum punya NIP)`
+      );
+    }
+    if (!workerName) {
+      throw new Error(`Nama pekerja baris ${index + 1} wajib diisi`);
+    }
+
+    // Tautkan baris ke user bila client memang mengirim `userId` (sudah
+    // divalidasi di atas) atau server memakai data user untuk mengisi baris.
+    const usedUserData =
+      Boolean(user) &&
+      (workerNik === user?.nip || workerName === user?.name || workerPosition === (user?.position ?? ''));
+    const linkedByClient = requestedIds[index] !== null;
+
+    return {
+      ...item,
+      userId: user && (linkedByClient || usedUserData) ? user.id : null,
+      workerNik,
+      workerName,
+      workerPosition: workerPosition || null,
+    };
+  });
+}
 
 /**
  * Normalisasi + validasi baris rincian.
@@ -170,17 +254,25 @@ export function normalizeSpklItems(items: SpklItemInput[]): NormalizedItem[] {
     const dateError = validateWorkDate(workDate);
     if (dateError) throw new Error(dateError);
 
+    const workerNik = item.workerNik?.trim() || '';
+    const workerName = item.workerName?.trim() || '';
+
+    // Seharusnya sudah diisi `resolveItemWorkers`; ini jaring pengaman terakhir.
+    if (!workerNik) throw new Error(`NIK pekerja baris ${index + 1} wajib diisi`);
+    if (!workerName) throw new Error(`Nama pekerja baris ${index + 1} wajib diisi`);
+
     const hours = computeHours(item.startTime, item.endTime);
     if (!(hours > 0)) {
       throw new Error(
-        `Jam lembur ${item.workerName} pada baris ${index + 1} harus lebih dari 0 (periksa jam mulai/selesai)`
+        `Jam lembur ${workerName} pada baris ${index + 1} harus lebih dari 0 (periksa jam mulai/selesai)`
       );
     }
 
     return {
       order: index,
-      workerNik: item.workerNik.trim(),
-      workerName: item.workerName.trim(),
+      userId: item.userId ?? null,
+      workerNik,
+      workerName,
       workerPosition: item.workerPosition?.trim() || null,
       company: item.company?.trim() || DEFAULT_COMPANY,
       taskDescription: item.taskDescription.trim(),
@@ -428,7 +520,7 @@ export async function createSpkl(actor: SpklActor, input: CreateSpklInput, optio
     'Penyetuju (Yang Menyetujui)'
   );
 
-  const items = normalizeSpklItems(input.items);
+  const items = normalizeSpklItems(await resolveItemWorkers(input.items, actor));
   const totalHours = computeTotal(items);
 
   const warnings = await runPp35Validation(requesterId, input.type, items, { strict: options.strict });
@@ -462,6 +554,7 @@ export async function createSpkl(actor: SpklActor, input: CreateSpklInput, optio
             items: {
               create: items.map((item) => ({
                 order: item.order,
+                userId: item.userId,
                 workerNik: item.workerNik,
                 workerName: item.workerName,
                 workerPosition: item.workerPosition,
@@ -528,7 +621,7 @@ export async function updateSpkl(
     await getActiveSigner(input.approverId, SpklSignerRole.APPROVER, 'Penyetuju (Yang Menyetujui)');
   }
 
-  const items = input.items ? normalizeSpklItems(input.items) : null;
+  const items = input.items ? normalizeSpklItems(await resolveItemWorkers(input.items, actor)) : null;
   const totalHours = items ? computeTotal(items) : decimalToNumber(existing.totalHours);
 
   let warnings: string[] = [];
@@ -563,6 +656,7 @@ export async function updateSpkl(
               items: {
                 create: items.map((item) => ({
                   order: item.order,
+                  userId: item.userId,
                   workerNik: item.workerNik,
                   workerName: item.workerName,
                   workerPosition: item.workerPosition,
