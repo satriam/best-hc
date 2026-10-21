@@ -688,17 +688,16 @@ export async function updateSpklStatus(id: string, actor: SpklActor, input: Upda
 
   const isOwner = existing.requesterId === actor.id;
   const isAdmin = actor.role === Role.ADMIN;
-  // Penyetuju boleh dipegang banyak user: cek keanggotaan lewat relasi pivot.
-  const isApprover =
-    !isAdmin && !isOwner
-      ? (await getSignerIdsForUser(actor.id)).includes(existing.approverId)
-      : false;
 
   const nextStatus = input.status;
 
   if (nextStatus === SpklStatus.APPROVED || nextStatus === SpklStatus.REJECTED) {
-    if (!isAdmin && !isApprover) {
-      throw new Error('Forbidden: hanya admin atau penyetuju terkait yang boleh menyetujui/menolak');
+    // Permintaan user: SELAIN ADMIN tidak boleh menyetujui/menolak SPKL.
+    // Logika lama "user yang terhubung ke master APPROVER ikut boleh" sengaja
+    // dihapus (kartu t_5ed82b41 bagian D). Hak MELIHAT SPKL milik approver
+    // tetap dipertahankan di getSpkls()/getSpklById().
+    if (!isAdmin) {
+      throw new Error('Forbidden: hanya Admin yang dapat menyetujui atau menolak SPKL');
     }
     if (existing.status === SpklStatus.CANCELLED) {
       throw new Error('SPKL yang sudah dibatalkan tidak dapat disetujui/ditolak');
