@@ -289,6 +289,16 @@ export default function SpklDetailPage({ params }: { params: Promise<{ id: strin
           </div>
         )}
 
+        {spkl.status === 'ON_PROGRESS' && !isAdmin && (
+          <div className="p-4 rounded-xl border bg-amber-50 border-amber-200 text-amber-900 text-xs flex items-start gap-2">
+            <Clock className="w-4 h-4 mt-0.5 shrink-0" />
+            <span>
+              <span className="font-bold">Menunggu persetujuan Admin.</span> SPKL ini sudah diajukan
+              dan sedang menunggu keputusan Admin. Anda akan melihat perubahan status di halaman ini.
+            </span>
+          </div>
+        )}
+
         {spkl.status === 'REJECTED' && spkl.rejectedNote && (
           <div className="p-4 rounded-xl border bg-rose-50 border-rose-200 text-rose-900 text-xs space-y-1">
             <div className="flex items-center gap-2 font-bold">

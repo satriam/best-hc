@@ -1005,7 +1005,12 @@ export function SpklForm({ mode, spklId, initial }: SpklFormProps) {
                           el.style.height = `${Math.max(46, el.scrollHeight)}px`;
                         }}
                         rows={2}
-                        placeholder="Uraian pekerjaan lembur (boleh beberapa baris, Enter untuk baris baru)"
+                        placeholder="Tulis uraian tugas… (boleh lebih dari satu baris)"
+                        onKeyDown={(event) => {
+                          // Enter di textarea hanya menambah baris — jangan pernah
+                          // memicu submit implisit pada form.
+                          if (event.key === 'Enter') event.stopPropagation();
+                        }}
                         className={`${showError && !row.taskDescription.trim() ? errorInputClass : inputClass} min-h-[46px] resize-y leading-snug whitespace-pre-wrap`}
                       />
                     </td>
