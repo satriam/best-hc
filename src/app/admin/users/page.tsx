@@ -1,17 +1,18 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
 import { Modal } from '@/components/ui/Modal';
 import { Input } from '@/components/ui/Input';
 import { StatusBadge } from '@/components/ui/Badge';
-import { UserPlus, Edit, Trash2, Key, Shield, Building2, CreditCard } from 'lucide-react';
+import { UserPlus, Edit, Trash2, Key } from 'lucide-react';
 import { Role } from '@prisma/client';
 
 interface UserItem {
   id: string;
   nip?: string;
+  position?: string;
   workUnit?: string;
   name: string;
   email: string;
@@ -21,6 +22,11 @@ interface UserItem {
   usedQuota: number;
   remainingQuota: number;
   createdAt: string;
+}
+
+/** Ambil pesan error yang aman dari nilai `unknown` (catch tanpa `any`). */
+function toErrorMessage(err: unknown): string {
+  return err instanceof Error && err.message ? err.message : 'Terjadi kesalahan. Coba lagi.';
 }
 
 export default function AdminUsersPage() {
@@ -35,6 +41,7 @@ export default function AdminUsersPage() {
   // Form Inputs
   const [formData, setFormData] = useState({
     nip: '',
+    position: '',
     workUnit: '',
     name: '',
     email: '',
@@ -47,29 +54,38 @@ export default function AdminUsersPage() {
   const [newPassword, setNewPassword] = useState('');
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [reloadToken, setReloadToken] = useState(0);
 
-  const fetchUsers = async () => {
-    setLoading(true);
-    try {
-      const res = await fetch('/api/users');
-      const json = await res.json();
-      if (json.success) {
-        setUsers(json.data);
-      }
-    } catch (err) {
-      console.error(err);
-    } finally {
-      setLoading(false);
-    }
-  };
+  const reload = useCallback(() => setReloadToken((token) => token + 1), []);
 
+  // Muat daftar user; setState hanya terjadi di callback async (pola yang sama
+  // dengan halaman daftar SPKL) agar tidak memicu cascading render.
   useEffect(() => {
-    fetchUsers();
-  }, []);
+    let active = true;
+
+    fetch('/api/users')
+      .then((res) => res.json())
+      .then((json) => {
+        if (!active) return;
+        if (json.success) setUsers(json.data);
+      })
+      .catch((err: unknown) => {
+        if (!active) return;
+        console.error(err);
+      })
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [reloadToken]);
 
   const openCreateModal = () => {
     setFormData({
       nip: '',
+      position: '',
       workUnit: '',
       name: '',
       email: '',
@@ -86,6 +102,7 @@ export default function AdminUsersPage() {
     setEditingUser(u);
     setFormData({
       nip: u.nip && u.nip !== '-' ? u.nip : '',
+      position: u.position && u.position !== '-' ? u.position : '',
       workUnit: u.workUnit && u.workUnit !== '-' ? u.workUnit : '',
       name: u.name,
       email: u.email,
@@ -115,9 +132,9 @@ export default function AdminUsersPage() {
       }
 
       setIsCreateOpen(false);
-      fetchUsers();
-    } catch (err: any) {
-      setSubmitError(err.message);
+      reload();
+    } catch (err) {
+      setSubmitError(toErrorMessage(err));
     } finally {
       setSubmitting(false);
     }
@@ -142,9 +159,9 @@ export default function AdminUsersPage() {
       }
 
       setEditingUser(null);
-      fetchUsers();
-    } catch (err: any) {
-      setSubmitError(err.message);
+      reload();
+    } catch (err) {
+      setSubmitError(toErrorMessage(err));
     } finally {
       setSubmitting(false);
     }
@@ -171,8 +188,8 @@ export default function AdminUsersPage() {
       setResettingUser(null);
       setNewPassword('');
       alert('Password berhasil diperbarui');
-    } catch (err: any) {
-      setSubmitError(err.message);
+    } catch (err) {
+      setSubmitError(toErrorMessage(err));
     } finally {
       setSubmitting(false);
     }
@@ -191,9 +208,9 @@ export default function AdminUsersPage() {
         throw new Error(json.message || 'Gagal menghapus user');
       }
 
-      fetchUsers();
-    } catch (err: any) {
-      alert(err.message);
+      reload();
+    } catch (err) {
+      alert(toErrorMessage(err));
     }
   };
 
@@ -205,7 +222,7 @@ export default function AdminUsersPage() {
             Manajemen User Pegawai
           </h1>
           <p className="text-xs text-slate-500 mt-1">
-            Kelola data pegawai, Nomor Pegawai (NIP), Satuan Kerja, hak akses, dan batas kuota cuti.
+            Kelola data pegawai, Nomor Pegawai (NIP), Jabatan / Posisi, Satuan Kerja, hak akses, dan batas kuota cuti.
           </p>
         </div>
         <Button onClick={openCreateModal} size="sm" className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold">
@@ -219,6 +236,7 @@ export default function AdminUsersPage() {
             <thead className="bg-slate-100/70 text-slate-700 font-semibold uppercase tracking-wider border-b border-slate-200">
               <tr>
                 <th className="px-5 py-3.5">Nomor Pegawai (NIP)</th>
+                <th className="px-5 py-3.5">Jabatan / Posisi</th>
                 <th className="px-5 py-3.5">Nama Pegawai</th>
                 <th className="px-5 py-3.5">Satuan Kerja</th>
                 <th className="px-5 py-3.5">Email & Gender</th>
@@ -230,13 +248,13 @@ export default function AdminUsersPage() {
             <tbody className="divide-y divide-slate-200/60 bg-white">
               {loading ? (
                 <tr>
-                  <td colSpan={7} className="px-6 py-8 text-center text-slate-400">
+                  <td colSpan={8} className="px-6 py-8 text-center text-slate-400">
                     Memuat data pegawai...
                   </td>
                 </tr>
               ) : users.length === 0 ? (
                 <tr>
-                  <td colSpan={7} className="px-6 py-8 text-center text-slate-400">
+                  <td colSpan={8} className="px-6 py-8 text-center text-slate-400">
                     Belum ada data pegawai.
                   </td>
                 </tr>
@@ -245,6 +263,9 @@ export default function AdminUsersPage() {
                   <tr key={u.id} className="hover:bg-slate-50/80 transition-colors">
                     <td className="px-5 py-3.5 font-mono text-slate-900 font-extrabold">
                       {u.nip || '-'}
+                    </td>
+                    <td className="px-5 py-3.5 text-slate-700 font-semibold">
+                      {u.position || '-'}
                     </td>
                     <td className="px-5 py-3.5 font-bold text-slate-900">
                       {u.name}
@@ -332,6 +353,19 @@ export default function AdminUsersPage() {
                 onChange={(e) => setFormData({ ...formData, workUnit: e.target.value })}
               />
             </div>
+          </div>
+
+          <div>
+            <label className="block font-bold text-slate-700 mb-1">Jabatan / Posisi</label>
+            <Input
+              placeholder="Contoh: VEGETATION MANAGEMENT SEC. HEAD"
+              maxLength={200}
+              value={formData.position}
+              onChange={(e) => setFormData({ ...formData, position: e.target.value })}
+            />
+            <p className="mt-1 text-[11px] text-slate-500">
+              Dipakai otomatis pada kolom Jabatan di SPKL. Maksimal 200 karakter.
+            </p>
           </div>
 
           <div>
@@ -444,6 +478,19 @@ export default function AdminUsersPage() {
                 onChange={(e) => setFormData({ ...formData, workUnit: e.target.value })}
               />
             </div>
+          </div>
+
+          <div>
+            <label className="block font-bold text-slate-700 mb-1">Jabatan / Posisi</label>
+            <Input
+              placeholder="Contoh: VEGETATION MANAGEMENT SEC. HEAD"
+              maxLength={200}
+              value={formData.position}
+              onChange={(e) => setFormData({ ...formData, position: e.target.value })}
+            />
+            <p className="mt-1 text-[11px] text-slate-500">
+              Dipakai otomatis pada kolom Jabatan di SPKL. Maksimal 200 karakter.
+            </p>
           </div>
 
           <div>
