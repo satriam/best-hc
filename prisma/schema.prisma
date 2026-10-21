@@ -113,6 +113,7 @@ model LeaveType {
 
   requestTypes    LeaveRequestType[]
   userLeaveQuotas UserLeaveQuota[]
+  segments        LeaveRequestSegment[]
 
   @@map("leave_types")
 }
@@ -134,8 +135,33 @@ model LeaveRequest {
   user           User               @relation(fields: [userId], references: [id], onDelete: Cascade)
   requestTypes   LeaveRequestType[]
   quotaHistories LeaveQuotaHistory[]
+  segments       LeaveRequestSegment[]
 
   @@map("leave_requests")
+}
+
+/// Rentang tanggal per pengajuan cuti. Satu pengajuan bisa berisi beberapa
+/// rentang (mis. 1-3 Okt cuti tahunan, 4 Okt cuti istri melahirkan,
+/// 10-11 Okt cuti tahunan) dan tiap rentang punya jenis cutinya sendiri.
+/// Kolom startDate/endDate/totalDays pada LeaveRequest tetap dipakai sebagai
+/// envelope agregat (min start, max end, jumlah totalDays) demi kompatibilitas
+/// list/filter/kalender.
+model LeaveRequestSegment {
+  id             String   @id @default(uuid())
+  leaveRequestId String
+  leaveTypeId    String
+  startDate      DateTime
+  endDate        DateTime
+  totalDays      Int
+  order          Int      @default(0)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  leaveRequest LeaveRequest @relation(fields: [leaveRequestId], references: [id], onDelete: Cascade)
+  leaveType    LeaveType    @relation(fields: [leaveTypeId], references: [id], onDelete: Cascade)
+
+  @@index([leaveRequestId])
+  @@map("leave_request_segments")
 }
 
 model LeaveRequestType {
