@@ -6,7 +6,6 @@ import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
 import { Modal } from '@/components/ui/Modal';
 import { SpklStatusBadge } from '@/components/spkl/SpklStatusBadge';
-import { SignerUsersHint } from '@/components/spkl/SignerUsersHint';
 import { SpklPrintStyles, SpklPrintTemplate } from '@/components/spkl/SpklPrintTemplate';
 import {
   SPKL_TYPE_LABEL,
@@ -34,9 +33,20 @@ import {
   XCircle,
 } from 'lucide-react';
 
-/** Batasan hukum PP 35/2021 — isi sama dengan form cetak. */
+/**
+ * Batasan hukum PP 35/2021.
+ *
+ * Batas harian HANYA berlaku untuk lembur hari kerja; lembur di luar hari kerja
+ * dan lembur hari libur resmi tidak dibatasi per hari (lihat `getDailyLimit`
+ * di `@/lib/spkl`).
+ */
 const PP35_ROWS: Array<{ ketentuan: string; nilai: string }> = [
-  { ketentuan: 'Maksimal lembur harian', nilai: '4 jam per hari' },
+  {
+    ketentuan: 'Maksimal lembur harian',
+    nilai: '4 jam per hari (khusus lembur hari kerja)',
+  },
+  { ketentuan: 'Lembur di luar hari kerja', nilai: 'Tanpa batas harian' },
+  { ketentuan: 'Lembur hari libur resmi', nilai: 'Tanpa batas harian' },
   { ketentuan: 'Maksimal lembur mingguan', nilai: '18 jam per minggu (di luar lembur hari libur resmi)' },
   { ketentuan: 'Maksimal lembur bulanan', nilai: '72 jam per bulan (di luar lembur hari libur resmi)' },
   { ketentuan: 'Lembur hari kerja biasa', nilai: 'Jam pertama x 1,5; jam berikutnya x 2' },
@@ -340,7 +350,6 @@ export default function SpklDetailPage({ params }: { params: Promise<{ id: strin
             <p className="text-[11px] text-slate-500 mt-0.5 truncate">
               {spkl.pic.position || '—'} · NIP {spkl.pic.nip || '-'}
             </p>
-            <SignerUsersHint users={spkl.pic.users} label="User terhubung" variant="chips" />
           </Card>
           <Card className="p-4">
             <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">
@@ -351,7 +360,6 @@ export default function SpklDetailPage({ params }: { params: Promise<{ id: strin
               {spkl.approver.department || spkl.approver.position || '—'} · NIP{' '}
               {spkl.approver.nip || '-'}
             </p>
-            <SignerUsersHint users={spkl.approver.users} label="User terhubung" variant="chips" />
           </Card>
         </div>
 
