@@ -79,7 +79,7 @@ function QuotaCell({
   field,
 }: {
   quotaInfo?: QuotaInfo | null;
-  field: 'previousRemaining' | 'usedByThisRequest' | 'currentRemaining';
+  field: 'previousRemaining' | 'usedByThisRequest' | 'remainingAfter';
 }) {
   if (!quotaInfo || quotaInfo.perType.length === 0) {
     return <span className="text-slate-400">{DASH}</span>;
@@ -147,12 +147,64 @@ async function fetchLeaveRequests(): Promise<LeaveRequestItem[]> {
   return json.data as LeaveRequestItem[];
 }
 
+/** Satu baris kuota user (bentuk data GET /api/quotas/<userId>). */
+interface UserQuotaRow {
+  leaveTypeId: string;
+  year: number;
+  totalQuota: number;
+  usedQuota: number;
+  leaveType?: { name?: string | null } | null;
+}
+
+/** Ambang kuota "tak terbatas" — konsisten dengan backend (UNLIMITED_QUOTA_THRESHOLD). */
+const UNLIMITED_QUOTA_THRESHOLD = 999;
+
+interface QuotaSummaryItem {
+  leaveTypeId: string;
+  leaveTypeName: string;
+  remaining: number;
+  total: number;
+}
+
+/**
+ * Saldo kuota SEKARANG per jenis cuti (bukan per pengajuan).
+ * Hanya jenis cuti dengan kuota terbatas yang ditampilkan.
+ */
+async function fetchQuotaSummary(): Promise<QuotaSummaryItem[]> {
+  const meRes = await fetch('/api/auth/me');
+  const meJson = await meRes.json();
+  const userId = meJson?.data?.id as string | undefined;
+  if (!meJson?.success || !userId) return [];
+
+  const res = await fetch(`/api/quotas/${userId}`);
+  const json = await res.json();
+  if (!json?.success || !Array.isArray(json.data)) return [];
+
+  return (json.data as UserQuotaRow[])
+    .filter((row) => row.totalQuota < UNLIMITED_QUOTA_THRESHOLD)
+    .map((row) => ({
+      leaveTypeId: row.leaveTypeId,
+      leaveTypeName: row.leaveType?.name ?? 'Cuti',
+      remaining: row.totalQuota - row.usedQuota,
+      total: row.totalQuota,
+    }));
+}
+
 export default function UserLeaveRequestsHistoryPage() {
   const [requests, setRequests] = useState<LeaveRequestItem[]>([]);
+  const [quotaSummary, setQuotaSummary] = useState<QuotaSummaryItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedReq, setSelectedReq] = useState<LeaveRequestItem | null>(null);
   const [cancellingId, setCancellingId] = useState<string | null>(null);
   const [actionMsg, setActionMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  const fetchQuota = async () => {
+    try {
+      setQuotaSummary(await fetchQuotaSummary());
+    } catch (err) {
+      console.error(err);
+    }
+  };
 
   const fetchRequests = async () => {
     setLoading(true);
@@ -176,6 +228,12 @@ export default function UserLeaveRequestsHistoryPage() {
       .finally(() => {
         if (active) setLoading(false);
       });
+
+    fetchQuotaSummary()
+      .then((data) => {
+        if (active) setQuotaSummary(data);
+      })
+      .catch((err) => console.error(err));
 
     return () => {
       active = false;
@@ -202,6 +260,7 @@ export default function UserLeaveRequestsHistoryPage() {
 
       setActionMsg({ type: 'success', text: 'Pengajuan cuti berhasil dibatalkan' });
       fetchRequests();
+      fetchQuota();
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Gagal membatalkan pengajuan';
       setActionMsg({ type: 'error', text: message });
@@ -238,6 +297,35 @@ export default function UserLeaveRequestsHistoryPage() {
         </div>
       )}
 
+      {quotaSummary.length > 0 && (
+        <Card className="p-5">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <h2 className="text-sm font-bold text-slate-900">Sisa Kuota Saat Ini</h2>
+              <p className="text-[11px] text-slate-500 mt-0.5">
+                Saldo kuota live Anda per jenis cuti (bukan per pengajuan).
+              </p>
+            </div>
+          </div>
+          <div className="mt-3 flex flex-wrap gap-2">
+            {quotaSummary.map((item) => (
+              <div
+                key={item.leaveTypeId}
+                className="px-3 py-2 rounded-lg border border-slate-200 bg-slate-50"
+              >
+                <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                  {item.leaveTypeName}
+                </p>
+                <p className={`text-xs mt-0.5 ${remainingClass(item.remaining)}`}>
+                  {item.remaining} hari{' '}
+                  <span className="text-[10px] font-medium text-slate-500">(dari {item.total})</span>
+                </p>
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
+
       <Card className="p-0 overflow-hidden border border-slate-200">
         <div className="overflow-x-auto">
           <table className="w-full min-w-[1080px] text-left text-xs text-slate-600">
@@ -262,7 +350,7 @@ export default function UserLeaveRequestsHistoryPage() {
                 </th>
                 <th className="px-4 py-2 text-right whitespace-nowrap">Sisa Sebelum</th>
                 <th className="px-4 py-2 text-right whitespace-nowrap">Terpakai</th>
-                <th className="px-4 py-2 text-right whitespace-nowrap">Sisa Saat Ini</th>
+                <th className="px-4 py-2 text-right whitespace-nowrap">Sisa Sesudah</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 bg-white">
@@ -318,7 +406,7 @@ export default function UserLeaveRequestsHistoryPage() {
                       <QuotaCell quotaInfo={req.quotaInfo} field="usedByThisRequest" />
                     </td>
                     <td className="px-4 py-4 text-right">
-                      <QuotaCell quotaInfo={req.quotaInfo} field="currentRemaining" />
+                      <QuotaCell quotaInfo={req.quotaInfo} field="remainingAfter" />
                     </td>
                     <td className="px-6 py-4">
                       <StatusBadge status={req.status} />
@@ -435,7 +523,7 @@ export default function UserLeaveRequestsHistoryPage() {
                         title: notAffected ? QUOTA_NOT_AFFECTED_HINT : undefined,
                       },
                       {
-                        label: 'Sisa Setelah',
+                        label: 'Sisa Sesudah',
                         value: formatRemaining(item.remainingAfter),
                         className: remainingClass(item.remainingAfter),
                         title: item.remainingAfter === null ? QUOTA_UNLIMITED_HINT : undefined,
