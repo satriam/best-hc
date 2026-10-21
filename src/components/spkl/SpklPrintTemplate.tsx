@@ -61,9 +61,6 @@ export function buildSpklPrintHtml(spkl: SpklDetail): string {
   const colon = `${noBorder}width:8px;text-align:center;`;
   const value = `${noBorder}font-weight:bold;`;
 
-  const pp35Cell = `${c}padding:2px 4px;font-size:8px;line-height:1.25;vertical-align:top;`;
-  const pp35Head = `${c}padding:2px 4px;font-size:8px;font-weight:bold;background-color:#002060;color:#fff;-webkit-print-color-adjust:exact;print-color-adjust:exact;`;
-
   return `
 <style>
   .spkl-print table.grid-table { border-collapse: separate !important; border-spacing: 0 !important; border-top: 1px solid #000 !important; border-left: 1px solid #000 !important; }
@@ -156,29 +153,6 @@ export function buildSpklPrintHtml(spkl: SpklDetail): string {
     <div>- Setiap Pelaksanaan Lembur Kerja, Karyawan yang ditugaskan untuk melaksanakan pekerjaan WAJIB melakukan Absensi Kehadiran secara real-time melalui Aplikasi CISEA.</div>
     <div>- Wajib Melampirkan Hasil Kerja pada Setiap Pengajuan SPKL (Dalam Bentuk Laporan Kerja melalui Chat, email, atau media lain yang dapat mewakili pelaksanaan Lembur Kerja ini).</div>
   </div>
-
-  <table class="grid-table keep" cellspacing="0" cellpadding="0" style="width:100%;border-collapse:separate!important;border-spacing:0!important;border-top:1px solid #000!important;border-left:1px solid #000!important;margin-top:6px;table-layout:fixed">
-    <colgroup><col style="width:34%" /><col style="width:66%" /></colgroup>
-    <thead>
-      <tr>
-        <th colspan="2" style="${hdr}font-size:8.5px;padding:3px 4px;text-align:left">BATASAN HUKUM YANG PERLU DIKETAHUI (PP 35/2021)</th>
-      </tr>
-    </thead>
-    <tbody>
-      <tr>
-        <td style="${pp35Head}">Ketentuan</td>
-        <td style="${pp35Head}">Nilai / Formula</td>
-      </tr>
-      <tr><td style="${pp35Cell}">Maksimal lembur harian</td><td style="${pp35Cell}">4 jam per hari</td></tr>
-      <tr><td style="${pp35Cell}">Maksimal lembur mingguan</td><td style="${pp35Cell}">18 jam per minggu (di luar lembur hari libur resmi)</td></tr>
-      <tr><td style="${pp35Cell}">Maksimal lembur bulanan</td><td style="${pp35Cell}">72 jam per bulan (di luar lembur hari libur resmi)</td></tr>
-      <tr><td style="${pp35Cell}">Lembur hari kerja biasa</td><td style="${pp35Cell}">Jam pertama x 1,5; jam berikutnya x 2</td></tr>
-      <tr><td style="${pp35Cell}">Lembur hari istirahat mingguan / libur resmi (shift 6 hari kerja)</td><td style="${pp35Cell}">Jam ke-1 s.d ke-8 x 2; jam ke-9 x 3; jam ke-10 dst x 4</td></tr>
-      <tr>
-        <td colspan="2" style="${pp35Cell}font-size:7.5px;font-style:italic">Penanggung jawab: Pengawas Lapangan / Admin SDM</td>
-      </tr>
-    </tbody>
-  </table>
 
   <div class="keep" style="margin-top:5px;font-size:7.5px;line-height:1.35">
     <div style="font-weight:bold;font-size:8px">HAL YANG PERLU DIPERHATIKAN</div>
