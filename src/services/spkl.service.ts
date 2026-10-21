@@ -16,6 +16,7 @@ import {
   validatePp35,
   validateWorkDate,
 } from '@/lib/spkl';
+import { getSignerIdsForUser } from '@/services/spkl-signer.service';
 
 /** Aktor yang sedang memanggil API (dari JWT session). */
 export interface SpklActor {
@@ -26,6 +27,11 @@ export interface SpklActor {
 export interface SpklFilterOptions {
   /** ADMIN: semua; USER: dipaksa ke id sendiri oleh route handler. */
   userId?: string;
+  /**
+   * Signer APPROVER yang terhubung ke user pemanggil. SPKL dengan `approverId`
+   * di daftar ini ikut terlihat (satu penyetuju bisa dipegang banyak user).
+   */
+  approverSignerIds?: string[];
   status?: SpklStatus;
   type?: SpklType;
   /** Rentang tanggal lembur (item), format `YYYY-MM-DD`. */
@@ -46,7 +52,13 @@ const signerSummary = {
   position: true,
   department: true,
   workUnit: true,
-  userId: true,
+  users: {
+    select: {
+      id: true,
+      userId: true,
+      user: { select: { id: true, name: true, email: true } },
+    },
+  },
 } satisfies Prisma.SpklSignerSelect;
 
 const spklDetailInclude = {
@@ -65,16 +77,40 @@ const spklListInclude = {
 
 type SpklWithItems = Prisma.SpklGetPayload<{ include: typeof spklDetailInclude }>;
 type SpklWithList = Prisma.SpklGetPayload<{ include: typeof spklListInclude }>;
+type SignerSummaryRow = Prisma.SpklSignerGetPayload<{ select: typeof signerSummary }>;
 
 function decimalToNumber(value: Prisma.Decimal | number | string | null | undefined): number {
   if (value === null || value === undefined) return 0;
   return Math.round(Number(value) * 100) / 100;
 }
 
+/**
+ * Ratakan relasi pivot PIC/penyetuju: `users[]` (untuk tampilan) + `userIdList`
+ * (untuk pengecekan cepat di klien).
+ */
+function serializeSignerSummary(signer: SignerSummaryRow) {
+  const users = signer.users
+    .map((link) => ({
+      id: link.id,
+      userId: link.user.id,
+      name: link.user.name,
+      email: link.user.email,
+    }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+
+  return {
+    ...signer,
+    users,
+    userIdList: users.map((user) => user.userId),
+  };
+}
+
 /** Ubah Decimal Prisma menjadi number agar JSON API enak dipakai UI. */
 function serializeDetail(spkl: SpklWithItems) {
   return {
     ...spkl,
+    pic: serializeSignerSummary(spkl.pic),
+    approver: serializeSignerSummary(spkl.approver),
     totalHours: decimalToNumber(spkl.totalHours),
     items: spkl.items.map((item) => ({ ...item, hours: decimalToNumber(item.hours) })),
   };
@@ -85,6 +121,8 @@ function serializeListItem(spkl: SpklWithList) {
 
   return {
     ...spkl,
+    pic: serializeSignerSummary(spkl.pic),
+    approver: serializeSignerSummary(spkl.approver),
     totalHours: decimalToNumber(spkl.totalHours),
     itemCount: spkl.items.length,
     workerCount: uniqueWorkers.size,
@@ -281,8 +319,18 @@ export async function getSpkls(options: SpklFilterOptions = {}) {
   const limit = Math.min(100, Math.max(1, options.limit ?? 10));
 
   const where: Prisma.SpklWhereInput = { deletedAt: null };
+  const and: Prisma.SpklWhereInput[] = [];
 
-  if (options.userId) where.requesterId = options.userId;
+  // Kepemilikan: milik sendiri ATAU SPKL yang penyetujunya terhubung ke user ini.
+  if (options.userId || (options.approverSignerIds && options.approverSignerIds.length > 0)) {
+    const ownership: Prisma.SpklWhereInput[] = [];
+    if (options.userId) ownership.push({ requesterId: options.userId });
+    if (options.approverSignerIds && options.approverSignerIds.length > 0) {
+      ownership.push({ approverId: { in: options.approverSignerIds } });
+    }
+    and.push(ownership.length === 1 ? ownership[0] : { OR: ownership });
+  }
+
   if (options.status) where.status = options.status;
   if (options.type) where.type = options.type;
 
@@ -312,6 +360,8 @@ export async function getSpkls(options: SpklFilterOptions = {}) {
       { items: { some: { workerNik: { contains: keyword, mode: 'insensitive' } } } },
     ];
   }
+
+  if (and.length > 0) where.AND = and;
 
   const [total, rows] = await Promise.all([
     prisma.spkl.count({ where }),
@@ -345,7 +395,8 @@ export async function getSpklById(id: string, actor?: SpklActor) {
 
   if (actor && actor.role !== Role.ADMIN) {
     const isOwner = spkl.requesterId === actor.id;
-    const isApprover = spkl.approver.userId === actor.id;
+    const isApprover =
+      !isOwner && (await getSignerIdsForUser(actor.id)).includes(spkl.approverId);
     if (!isOwner && !isApprover) {
       throw new Error('Forbidden: Anda tidak berhak melihat SPKL ini');
     }
@@ -543,7 +594,11 @@ export async function updateSpklStatus(id: string, actor: SpklActor, input: Upda
 
   const isOwner = existing.requesterId === actor.id;
   const isAdmin = actor.role === Role.ADMIN;
-  const isApprover = existing.approver.userId === actor.id;
+  // Penyetuju boleh dipegang banyak user: cek keanggotaan lewat relasi pivot.
+  const isApprover =
+    !isAdmin && !isOwner
+      ? (await getSignerIdsForUser(actor.id)).includes(existing.approverId)
+      : false;
 
   const nextStatus = input.status;
 

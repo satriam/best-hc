@@ -60,7 +60,9 @@ async function handleUpdate(
   } catch (error: unknown) {
     const { message, issues } = normalizeError(error, 'Gagal memperbarui penanda tangan');
 
-    const status = /tidak ditemukan/i.test(message) ? 404 : 400;
+    // 404 HANYA bila penanda tangannya sendiri tidak ada. Error lain (mis. id user
+    // yang tidak valid pada `userIds`) adalah kesalahan input → 400.
+    const status = /^Penanda tangan tidak ditemukan/i.test(message) ? 404 : 400;
     return NextResponse.json({ success: false, message, issues }, { status });
   }
 }

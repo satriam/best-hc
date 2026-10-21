@@ -76,7 +76,8 @@ export const spklSignerSchema = z.object({
   position: z.string().trim().max(200, 'Jabatan maksimal 200 karakter').optional().nullable(),
   department: z.string().trim().max(200, 'Departemen maksimal 200 karakter').optional().nullable(),
   workUnit: z.string().trim().max(50, 'Satuan kerja maksimal 50 karakter').optional().nullable(),
-  userId: z.string().uuid('ID user tidak valid').optional().nullable(),
+  /** Satu penanda tangan boleh terhubung ke banyak user (array kosong = tanpa user). */
+  userIds: z.array(z.string().uuid('ID user tidak valid')).max(50, 'Maksimal 50 user').optional().default([]),
   isActive: z.boolean().optional().default(true),
   isDefault: z.boolean().optional().default(false),
   sortOrder: z.number().int().min(0).optional().default(0),
@@ -84,9 +85,35 @@ export const spklSignerSchema = z.object({
 
 export type SpklSignerInput = z.infer<typeof spklSignerSchema>;
 
-export const updateSpklSignerSchema = spklSignerSchema.partial().refine(
-  (value) => Object.keys(value).length > 0,
-  { message: 'Tidak ada data yang diubah' }
-);
+/**
+ * Schema UPDATE penanda tangan.
+ *
+ * PENTING: jangan memakai `spklSignerSchema.partial()`. `.partial()` hanya membuat
+ * field jadi optional, tetapi `.default()` pada field tetap dijalankan saat key tidak
+ * dikirim — akibatnya body `{ "position": "..." }` ikut menghasilkan
+ * `isDefault: false, isActive: true, sortOrder: 0` dan service menimpanya sebagai
+ * perubahan eksplisit (flag default hilang / penanda tangan nonaktif aktif kembali).
+ * Karena itu field di sini ditulis ulang TANPA `.default()`.
+ */
+export const updateSpklSignerSchema = z
+  .object({
+    role: z.nativeEnum(SpklSignerRole).optional(),
+    name: z.string().trim().min(2, 'Nama penanda tangan minimal 2 karakter').optional(),
+    nip: z.string().trim().max(50, 'NIP maksimal 50 karakter').optional().nullable(),
+    position: z.string().trim().max(200, 'Jabatan maksimal 200 karakter').optional().nullable(),
+    department: z.string().trim().max(200, 'Departemen maksimal 200 karakter').optional().nullable(),
+    workUnit: z.string().trim().max(50, 'Satuan kerja maksimal 50 karakter').optional().nullable(),
+    /**
+     * Tanpa `.default()`: `[]` berarti "lepas semua tautan", sedangkan key yang
+     * tidak dikirim berarti "jangan sentuh relasi user sama sekali".
+     */
+    userIds: z.array(z.string().uuid('ID user tidak valid')).max(50, 'Maksimal 50 user').optional(),
+    isActive: z.boolean().optional(),
+    isDefault: z.boolean().optional(),
+    sortOrder: z.number().int().min(0).optional(),
+  })
+  .refine((value) => Object.keys(value).length > 0, {
+    message: 'Tidak ada data yang diubah',
+  });
 
 export type UpdateSpklSignerInput = z.infer<typeof updateSpklSignerSchema>;
