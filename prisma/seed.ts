@@ -1,4 +1,4 @@
-import { PrismaClient, Role, Gender, LeaveCategory, CalculationType, LeaveStatus, QuotaHistoryType } from '@prisma/client';
+import { PrismaClient, Role, Gender, LeaveCategory, CalculationType, LeaveStatus, QuotaHistoryType, SpklSignerRole } from '@prisma/client';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { Pool } from 'pg';
 import bcrypt from 'bcryptjs';
@@ -17,6 +17,10 @@ async function main() {
   await prisma.leaveRequest.deleteMany();
   await prisma.leaveQuota.deleteMany();
   await prisma.leaveType.deleteMany();
+  // SPKL: hapus rincian & dokumen dulu, lalu master penanda tangan (FK restrict ke users)
+  await prisma.spklItem.deleteMany();
+  await prisma.spkl.deleteMany();
+  await prisma.spklSigner.deleteMany();
   await prisma.user.deleteMany();
   await prisma.nationalHoliday.deleteMany();
 
@@ -434,6 +438,37 @@ async function main() {
 
   for (const h of holidaysData) {
     await prisma.nationalHoliday.create({ data: h });
+  }
+
+  // 5. Seed master penanda tangan SPKL (PIC & penyetuju) — contoh dari form SPKL FMWR.
+  //    Tidak ada data SPKL contoh: dokumen SPKL dibuat lewat aplikasi.
+  const spklSigners = [
+    {
+      role: SpklSignerRole.PIC,
+      name: 'Krisman Hutagaol',
+      nip: '7796130645',
+      position: 'VEGETATION MANAGEMENT SEC. HEAD',
+      department: 'VEGETATION MANAGEMENT SEC. HEAD',
+      workUnit: 'FMWR',
+      isActive: true,
+      isDefault: true,
+      sortOrder: 0,
+    },
+    {
+      role: SpklSignerRole.APPROVER,
+      name: 'Maufiroh Titik Khotimah',
+      nip: '8409230759',
+      position: 'FORESTRY MGMT & WATERSHED REH DEPT. HEAD',
+      department: 'FORESTRY MGMT & WATERSHED REH DEPT. HEAD',
+      workUnit: 'FMWR',
+      isActive: true,
+      isDefault: true,
+      sortOrder: 0,
+    },
+  ];
+
+  for (const signer of spklSigners) {
+    await prisma.spklSigner.create({ data: signer });
   }
 
   console.log('Database seeding completed successfully.');
