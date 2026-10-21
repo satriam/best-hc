@@ -45,7 +45,6 @@ export default function CreateLeaveRequestPage() {
 
   const [leaveTypes, setLeaveTypes] = useState<LeaveType[]>([]);
   const [loadingLeaveTypes, setLoadingLeaveTypes] = useState(true);
-  const [userRemainingQuota, setUserRemainingQuota] = useState<number | null>(null);
   const [userGender, setUserGender] = useState<'MALE' | 'FEMALE'>('MALE');
   const [showMaleWarningModal, setShowMaleWarningModal] = useState(false);
   const [allHolidays, setAllHolidays] = useState<HolidayDetail[]>([]);
@@ -115,7 +114,6 @@ export default function CreateLeaveRequestPage() {
 
         if (jsonMe.success && jsonMe.data) {
           setCurrentUserId(jsonMe.data.id);
-          setUserRemainingQuota(jsonMe.data.remainingQuota);
           if (jsonMe.data.gender) {
             setUserGender(jsonMe.data.gender);
           }
@@ -198,11 +196,10 @@ export default function CreateLeaveRequestPage() {
     fetchBookedDates();
   }, [isAdmin, selectedUserId]);
 
-  // Sync quota & gender display to the selected user (ADMIN only)
+  // Sync gender display to the selected user (ADMIN only)
   useEffect(() => {
     if (!isAdmin) return;
     const selected = users.find((u) => u.id === selectedUserId);
-    setUserRemainingQuota(selected ? selected.remainingQuota : null);
     if (selected) setUserGender(selected.gender);
   }, [isAdmin, selectedUserId, users]);
 
@@ -292,6 +289,30 @@ export default function CreateLeaveRequestPage() {
     setValue('leaveTypeIds', newSelection, { shouldValidate: true });
   };
 
+  // Rincian kuota per jenis cuti terpilih (dipakai / sisa sebelum / sisa sesudah).
+  // Semua jenis cuti memakai kuota per-jenis (tabel UserLeaveQuota via GET /api/quotas/<userId>),
+  // tidak ada lagi angka generik dari LeaveQuota.
+  const quotaRows = selectedTypeIds.map((typeId) => {
+    const type = leaveTypes.find((t) => t.id === typeId);
+    const quota = typeQuotas[typeId];
+    const isUnlimited = !!quota && quota.totalQuota >= 999;
+    const remainingBefore = quota ? quota.totalQuota - quota.usedQuota : null;
+    const remainingAfter = remainingBefore !== null ? remainingBefore - calculatedDays : null;
+
+    return {
+      typeId,
+      name: type?.name ?? 'Jenis cuti',
+      daysDescription: type?.daysDescription ?? null,
+      totalQuota: quota ? quota.totalQuota : null,
+      usedQuota: quota ? quota.usedQuota : null,
+      remainingBefore,
+      remainingAfter,
+      isUnlimited,
+      hasQuota: !!quota,
+      isOver: remainingAfter !== null && !isUnlimited && remainingAfter < 0,
+    };
+  });
+
   const onSubmit = async (data: CreateLeaveRequestInput) => {
     setErrorMsg(null);
 
@@ -308,6 +329,14 @@ export default function CreateLeaveRequestPage() {
     if (calculatedDays <= 0) {
       setErrorMsg(
         'Rentang tanggal yang Anda pilih pada kalender tidak memiliki hari kerja efektif (contoh: hanya tanggal merah / akhir pekan). Silakan pilih hari kerja.'
+      );
+      return;
+    }
+
+    const insufficientQuota = quotaRows.find((row) => row.isOver);
+    if (insufficientQuota) {
+      setErrorMsg(
+        `Sisa kuota ${insufficientQuota.name} tidak mencukupi (Sisa: ${insufficientQuota.remainingBefore} Hari, Pengajuan: ${calculatedDays} Hari).`
       );
       return;
     }
@@ -338,14 +367,11 @@ export default function CreateLeaveRequestPage() {
   const cutiTypes = leaveTypes.filter((t) => t.category === 'CUTI');
   const izinTypes = leaveTypes.filter((t) => t.category === 'IZIN_MENINGGALKAN');
 
+  // Angka pada kartu jenis cuti = SISA SEBELUM pengajuan, selalu dari kuota per-jenis cuti.
   const getQuotaDisplay = (type: LeaveType) => {
-    if (type.name === 'Cuti Tahunan' || type.name === 'Pinjam Cuti') {
-      return userRemainingQuota !== null ? `${userRemainingQuota} Hari` : '... Hari';
-    }
-
     const quota = typeQuotas[type.id];
     if (quota) {
-      if (quota.totalQuota >= 999) return 'Bebas';
+      if (quota.totalQuota >= 999) return 'Tidak dibatasi';
       return `${Math.max(0, quota.totalQuota - quota.usedQuota)} Hari`;
     }
 
@@ -641,7 +667,116 @@ export default function CreateLeaveRequestPage() {
             )}
           </div>
 
-          {/* Section 3: Reason & Attachment */}
+          {/* Section 3: Rincian Kuota per Jenis Cuti Terpilih */}
+          <div className="w-full space-y-3">
+            <div className="flex items-center justify-between">
+              <label className="block text-sm font-bold text-slate-900">3. Rincian Kuota Cuti</label>
+              <span className="text-xs text-slate-400">
+                Otomatis mengikuti jenis cuti &amp; tanggal terpilih
+              </span>
+            </div>
+
+            {quotaRows.length === 0 ? (
+              <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 text-xs text-slate-500 font-medium">
+                Pilih jenis cuti terlebih dahulu untuk melihat rincian kuota (dipakai, sisa sebelum, dan sisa sesudah pengajuan).
+              </div>
+            ) : (
+              <div className="space-y-3 w-full">
+                {quotaRows.map((row) => (
+                  <div
+                    key={row.typeId}
+                    className={`rounded-2xl border p-4 w-full animate-fadeIn ${
+                      row.isOver ? 'bg-rose-50/80 border-rose-300' : 'bg-white border-slate-200'
+                    }`}
+                  >
+                    <div className="flex flex-wrap items-center justify-between gap-2 pb-2.5 border-b border-slate-100">
+                      <span className="text-sm font-extrabold text-slate-900">{row.name}</span>
+                      <span className="text-[11px] font-bold text-indigo-800 bg-indigo-50 border border-indigo-200 px-2.5 py-1 rounded-lg">
+                        Pengajuan ini: {calculatedDays} hari
+                      </span>
+                    </div>
+
+                    <div className="mt-3 grid grid-cols-1 sm:grid-cols-3 gap-3">
+                      {/* Kuota dipakai */}
+                      <div className="p-3 rounded-xl bg-slate-50 border border-slate-200">
+                        <span className="block text-[11px] font-bold text-slate-500 uppercase tracking-wider">
+                          Kuota dipakai
+                        </span>
+                        <span className="block mt-1 text-base font-black text-slate-800">
+                          {row.isUnlimited
+                            ? 'Tidak dibatasi'
+                            : row.hasQuota
+                            ? `${row.usedQuota} Hari`
+                            : '-'}
+                        </span>
+                      </div>
+
+                      {/* Sisa sebelum pengajuan ini */}
+                      <div className="p-3 rounded-xl bg-indigo-50/80 border border-indigo-200">
+                        <span className="block text-[11px] font-bold text-indigo-700 uppercase tracking-wider">
+                          Sisa sebelum
+                        </span>
+                        <span className="block mt-1 text-base font-black text-indigo-900">
+                          {row.isUnlimited
+                            ? 'Tidak dibatasi'
+                            : row.hasQuota
+                            ? `${row.remainingBefore} Hari`
+                            : 'Belum ada data'}
+                        </span>
+                        {!row.isUnlimited && row.hasQuota && (
+                          <span className="block text-[11px] text-slate-500 font-semibold mt-0.5">
+                            dari {row.totalQuota} hari
+                          </span>
+                        )}
+                      </div>
+
+                      {/* Sisa sesudah pengajuan ini */}
+                      <div
+                        className={`p-3 rounded-xl border ${
+                          row.isOver
+                            ? 'bg-rose-100 border-rose-300'
+                            : 'bg-emerald-50/80 border-emerald-200'
+                        }`}
+                      >
+                        <span
+                          className={`block text-[11px] font-bold uppercase tracking-wider ${
+                            row.isOver ? 'text-rose-700' : 'text-emerald-700'
+                          }`}
+                        >
+                          Sisa sesudah
+                        </span>
+                        <span
+                          className={`block mt-1 text-base font-black ${
+                            row.isOver ? 'text-rose-700' : 'text-emerald-900'
+                          }`}
+                        >
+                          {row.isUnlimited
+                            ? 'Tidak dibatasi'
+                            : row.hasQuota
+                            ? `${row.remainingAfter} Hari`
+                            : '-'}
+                        </span>
+                        {row.isOver && (
+                          <span className="block text-[11px] text-rose-700 font-extrabold mt-0.5">
+                            ⚠ Kuota tidak cukup
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    {!row.hasQuota && (
+                      <p className="mt-2 text-[11px] text-amber-800 font-semibold bg-amber-50 border border-amber-200 rounded-lg p-2">
+                        Data kuota jenis cuti ini belum tersedia. Jatah mengikuti ketentuan:{' '}
+                        {row.daysDescription || 'sesuai kebijakan HR'}.
+                      </p>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Section 4: Reason & Attachment */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 w-full">
             <div>
               <label className="block text-xs font-semibold text-slate-700 mb-1.5">
