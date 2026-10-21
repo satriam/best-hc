@@ -1,16 +1,26 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
-import { createLeaveRequestSchema, CreateLeaveRequestInput } from '@/schemas/leave.schema';
+import { z } from 'zod';
 import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
 import { Modal } from '@/components/ui/Modal';
 import { CalendarRangePicker } from '@/components/ui/CalendarRangePicker';
 import { formatDate } from '@/lib/utils';
-import { Calendar as CalendarIcon, Upload, ArrowLeft, AlertTriangle, Check, Info, Sparkles } from 'lucide-react';
+import { rangesOverlap, toDateKey } from '@/schemas/leave.schema';
+import {
+  ArrowLeft,
+  Upload,
+  AlertTriangle,
+  Info,
+  Sparkles,
+  Plus,
+  Trash2,
+  CalendarRange,
+} from 'lucide-react';
 import Link from 'next/link';
 
 interface LeaveType {
@@ -40,6 +50,105 @@ interface UserOption {
   remainingQuota: number;
 }
 
+/** Baris ringkas GET /api/holidays */
+interface HolidayApiRow {
+  date: string;
+  name: string;
+}
+
+/** Baris ringkas GET /api/leave-requests (untuk menandai tanggal yang sudah dipakai) */
+interface LeaveRequestListRow {
+  status: string;
+  startDate: string;
+  endDate: string;
+  requestTypes?: Array<{ leaveType?: { name?: string | null } | null }>;
+  segments?: Array<{
+    startDate: string;
+    endDate: string;
+    leaveType?: { name?: string | null } | null;
+  }>;
+}
+
+/** Satu baris rentang tanggal pada form (satu rentang = satu jenis cuti). */
+interface SegmentDraft {
+  key: string;
+  leaveTypeId: string;
+  startDate: string;
+  endDate: string;
+}
+
+/** Hasil hitung per rentang dari POST /api/leave-requests/calculate (bentuk segments[]). */
+interface CalcSegment {
+  index: number;
+  leaveTypeId: string;
+  leaveTypeName: string | null;
+  startDate: string;
+  endDate: string;
+  totalDays: number;
+  holidaysInRange: HolidayDetail[];
+  weekendDaysCount: number;
+}
+
+interface CalcResult {
+  totalDays: number;
+  segments: CalcSegment[];
+  holidaysInRange: HolidayDetail[];
+  weekendDaysCount: number;
+}
+
+const EMPTY_CALC: CalcResult = {
+  totalDays: 0,
+  segments: [],
+  holidaysInRange: [],
+  weekendDaysCount: 0,
+};
+
+const formSchema = z.object({
+  reason: z.string().min(3, 'Keterangan minimal 3 karakter'),
+  attachmentUrl: z.string().optional(),
+});
+
+type FormValues = z.infer<typeof formSchema>;
+
+let segmentKeySeq = 0;
+function nextSegmentKey() {
+  segmentKeySeq += 1;
+  return `seg-${segmentKeySeq}`;
+}
+
+/** Tanggal hari ini menurut zona waktu lokal (bukan UTC), format YYYY-MM-DD. */
+function todayKey(): string {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(
+    d.getDate()
+  ).padStart(2, '0')}`;
+}
+
+/** Geser kunci tanggal 'YYYY-MM-DD' sebanyak n hari (tanpa pergeseran timezone). */
+function shiftDateKey(dateKey: string, days: number): string {
+  const d = new Date(`${dateKey}T00:00:00`);
+  if (isNaN(d.getTime())) return dateKey;
+  d.setDate(d.getDate() + days);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(
+    d.getDate()
+  ).padStart(2, '0')}`;
+}
+
+function safeParseJson(res: Response) {
+  return res.text().then((text) => {
+    try {
+      return text && text.trim().length > 0 ? JSON.parse(text) : {};
+    } catch {
+      return { success: false, message: 'Respon tidak valid' };
+    }
+  });
+}
+
+/** Format rentang untuk pesan validasi: 01/10/2026 - 03/10/2026 */
+function formatRange(segment: { startDate: string; endDate: string }): string {
+  return `${formatDate(segment.startDate)} - ${formatDate(segment.endDate)}`;
+}
+
 export default function CreateLeaveRequestPage() {
   const router = useRouter();
 
@@ -47,6 +156,7 @@ export default function CreateLeaveRequestPage() {
   const [loadingLeaveTypes, setLoadingLeaveTypes] = useState(true);
   const [userGender, setUserGender] = useState<'MALE' | 'FEMALE'>('MALE');
   const [showMaleWarningModal, setShowMaleWarningModal] = useState(false);
+  const [maleWarningTypeName, setMaleWarningTypeName] = useState<string>('');
   const [allHolidays, setAllHolidays] = useState<HolidayDetail[]>([]);
   const [userBookedDates, setUserBookedDates] = useState<BookedDateDetail[]>([]);
 
@@ -58,9 +168,12 @@ export default function CreateLeaveRequestPage() {
     Record<string, { totalQuota: number; usedQuota: number }>
   >({});
 
-  const [calculatedDays, setCalculatedDays] = useState<number>(0);
-  const [holidaysInRange, setHolidaysInRange] = useState<HolidayDetail[]>([]);
-  const [weekendDaysCount, setWeekendDaysCount] = useState<number>(0);
+  // Daftar rentang tanggal — inti form ini
+  const [segments, setSegments] = useState<SegmentDraft[]>([
+    { key: nextSegmentKey(), leaveTypeId: '', startDate: todayKey(), endDate: todayKey() },
+  ]);
+  const [calc, setCalc] = useState<CalcResult>(EMPTY_CALC);
+  const [calculating, setCalculating] = useState(false);
 
   const [submitting, setSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -68,32 +181,14 @@ export default function CreateLeaveRequestPage() {
   const {
     register,
     handleSubmit,
-    setValue,
-    watch,
     formState: { errors },
-  } = useForm<CreateLeaveRequestInput>({
-    resolver: zodResolver(createLeaveRequestSchema),
+  } = useForm<FormValues>({
+    resolver: zodResolver(formSchema),
     defaultValues: {
-      leaveTypeIds: [],
-      startDate: new Date().toISOString().split('T')[0],
-      endDate: new Date().toISOString().split('T')[0],
       reason: '',
       attachmentUrl: '',
     },
   });
-
-  const selectedTypeIds = watch('leaveTypeIds') || [];
-  const startDate = watch('startDate');
-  const endDate = watch('endDate');
-
-  const safeParseJson = async (res: Response) => {
-    const text = await res.text();
-    try {
-      return text && text.trim().length > 0 ? JSON.parse(text) : {};
-    } catch {
-      return { success: false, message: 'Respon tidak valid' };
-    }
-  };
 
   // Fetch Leave Types, User Quota, User Gender, All Holidays (and user list for ADMIN)
   useEffect(() => {
@@ -129,17 +224,23 @@ export default function CreateLeaveRequestPage() {
         if (jsonTypes.success && Array.isArray(jsonTypes.data) && jsonTypes.data.length > 0) {
           setLeaveTypes(jsonTypes.data);
 
-          // Auto select Cuti Tahunan or first leave type if nothing selected yet
+          // Jenis cuti default untuk baris pertama: Cuti Tahunan bila ada.
           const defaultType =
             jsonTypes.data.find((t: LeaveType) => t.name === 'Cuti Tahunan') || jsonTypes.data[0];
           if (defaultType) {
-            setValue('leaveTypeIds', [defaultType.id], { shouldValidate: true });
+            setSegments((prev) =>
+              prev.map((segment, index) =>
+                index === 0 && !segment.leaveTypeId
+                  ? { ...segment, leaveTypeId: defaultType.id }
+                  : segment
+              )
+            );
           }
         }
 
         if (jsonHolidays.success && Array.isArray(jsonHolidays.data)) {
           setAllHolidays(
-            jsonHolidays.data.map((h: any) => ({
+            jsonHolidays.data.map((h: HolidayApiRow) => ({
               date: h.date.split('T')[0],
               name: h.name,
             }))
@@ -169,23 +270,38 @@ export default function CreateLeaveRequestPage() {
         if (!json.success || !Array.isArray(json.data)) return;
 
         const bookedList: BookedDateDetail[] = [];
-        json.data.forEach((req: any) => {
+        json.data.forEach((req: LeaveRequestListRow) => {
           if (req.status === 'ON_PROGRESS' || req.status === 'APPROVED' || req.status === 'DONE') {
-            const s = new Date(req.startDate);
-            const e = new Date(req.endDate);
-            const typeName = req.requestTypes?.[0]?.leaveType?.name || 'Cuti';
+            // Tandai tanggal per rentang (segments) supaya celah antar rentang tidak ikut ditandai.
+            const ranges: Array<{ startDate: string; endDate: string; leaveTypeName: string }> =
+              Array.isArray(req.segments) && req.segments.length > 0
+                ? req.segments.map((s) => ({
+                    startDate: String(s.startDate).split('T')[0],
+                    endDate: String(s.endDate).split('T')[0],
+                    leaveTypeName: s.leaveType?.name || 'Cuti',
+                  }))
+                : [
+                    {
+                      startDate: String(req.startDate).split('T')[0],
+                      endDate: String(req.endDate).split('T')[0],
+                      leaveTypeName: req.requestTypes?.[0]?.leaveType?.name || 'Cuti',
+                    },
+                  ];
 
-            let curr = new Date(s);
-            while (curr <= e) {
-              const year = curr.getFullYear();
-              const month = String(curr.getMonth() + 1).padStart(2, '0');
-              const day = String(curr.getDate()).padStart(2, '0');
-              bookedList.push({
-                date: `${year}-${month}-${day}`,
-                leaveType: typeName,
-              });
-              curr.setDate(curr.getDate() + 1);
-            }
+            ranges.forEach((range) => {
+              const curr = new Date(`${range.startDate}T00:00:00`);
+              const end = new Date(`${range.endDate}T00:00:00`);
+              while (curr <= end) {
+                bookedList.push({
+                  date: `${curr.getFullYear()}-${String(curr.getMonth() + 1).padStart(
+                    2,
+                    '0'
+                  )}-${String(curr.getDate()).padStart(2, '0')}`,
+                  leaveType: range.leaveTypeName,
+                });
+                curr.setDate(curr.getDate() + 1);
+              }
+            });
           }
         });
         setUserBookedDates(bookedList);
@@ -196,12 +312,17 @@ export default function CreateLeaveRequestPage() {
     fetchBookedDates();
   }, [isAdmin, selectedUserId]);
 
-  // Sync gender display to the selected user (ADMIN only)
-  useEffect(() => {
-    if (!isAdmin) return;
-    const selected = users.find((u) => u.id === selectedUserId);
-    if (selected) setUserGender(selected.gender);
-  }, [isAdmin, selectedUserId, users]);
+  // Gender yang dipakai untuk peringatan cuti khusus: mengikuti karyawan terpilih bila ADMIN.
+  const effectiveGender: 'MALE' | 'FEMALE' =
+    isAdmin ? users.find((u) => u.id === selectedUserId)?.gender ?? userGender : userGender;
+
+  // Tahun kuota mengikuti tanggal mulai paling awal dari rentang yang diisi.
+  const quotaYear = useMemo(() => {
+    const years = segments
+      .map((s) => (s.startDate ? Number(s.startDate.slice(0, 4)) : NaN))
+      .filter((y) => !isNaN(y) && y > 2000);
+    return years.length > 0 ? Math.min(...years) : new Date().getFullYear();
+  }, [segments]);
 
   // Fetch per-leave-type quota for the relevant user so the form shows real remaining days
   useEffect(() => {
@@ -213,7 +334,9 @@ export default function CreateLeaveRequestPage() {
       }
 
       try {
-        const json = await safeParseJson(await fetch(`/api/quotas/${targetId}`));
+        const json = await safeParseJson(
+          await fetch(`/api/quotas/${targetId}?year=${quotaYear}`)
+        );
         if (!json.success || !Array.isArray(json.data)) return;
 
         const map: Record<string, { totalQuota: number; usedQuota: number }> = {};
@@ -228,92 +351,182 @@ export default function CreateLeaveRequestPage() {
       }
     }
     fetchTypeQuotas();
-  }, [isAdmin, selectedUserId, currentUserId]);
+  }, [isAdmin, selectedUserId, currentUserId, quotaYear]);
 
-  // Calculate days & detect holidays dynamically
+  // Hitung hari kerja per rentang lewat API (debounce supaya tidak menembak tiap ketukan)
   useEffect(() => {
-    async function calculateDays() {
-      if (!selectedTypeIds.length || !startDate || !endDate) {
-        setCalculatedDays(0);
-        setHolidaysInRange([]);
-        setWeekendDaysCount(0);
+    let cancelled = false;
+
+    const timer = setTimeout(async () => {
+      const hasUsableSegment = segments.some((s) => s.startDate && s.endDate);
+      if (!hasUsableSegment) {
+        setCalc(EMPTY_CALC);
         return;
       }
 
+      setCalculating(true);
       try {
         const res = await fetch('/api/leave-requests/calculate', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            leaveTypeIds: selectedTypeIds,
-            startDate,
-            endDate,
+            segments: segments.map((s) => ({
+              leaveTypeId: s.leaveTypeId,
+              startDate: s.startDate,
+              endDate: s.endDate,
+            })),
           }),
         });
 
         const json = await safeParseJson(res);
-        if (json.success) {
-          setCalculatedDays(json.totalDays ?? 0);
-          setHolidaysInRange(json.holidaysInRange ?? []);
-          setWeekendDaysCount(json.weekendDaysCount ?? 0);
+        if (!cancelled && json.success) {
+          setCalc({
+            totalDays: json.totalDays ?? 0,
+            segments: Array.isArray(json.segments) ? json.segments : [],
+            holidaysInRange: Array.isArray(json.holidaysInRange) ? json.holidaysInRange : [],
+            weekendDaysCount: json.weekendDaysCount ?? 0,
+          });
         }
       } catch (err) {
         console.error('Error calculation:', err);
+      } finally {
+        if (!cancelled) setCalculating(false);
+      }
+    }, 250);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [segments]);
+
+  const segCalc = (index: number): CalcSegment | undefined =>
+    calc.segments.find((s) => s.index === index);
+
+  // ---- Validasi UI per baris (jenis cuti, urutan tanggal, tumpang tindih antar baris) ----
+  const rowErrors = useMemo(() => {
+    const result: string[][] = segments.map(() => []);
+
+    segments.forEach((segment, index) => {
+      if (!segment.leaveTypeId) {
+        result[index].push('Jenis cuti wajib dipilih.');
+      }
+      if (!segment.startDate || !segment.endDate) {
+        result[index].push('Tanggal mulai dan tanggal selesai wajib diisi.');
+        return;
+      }
+      if (toDateKey(segment.endDate) < toDateKey(segment.startDate)) {
+        result[index].push('Tanggal selesai tidak boleh sebelum tanggal mulai.');
+      }
+    });
+
+    // Antar rentang tidak boleh tumpang tindih (hari kalender).
+    for (let i = 0; i < segments.length; i += 1) {
+      for (let j = i + 1; j < segments.length; j += 1) {
+        const a = segments[i];
+        const b = segments[j];
+        if (!a.startDate || !a.endDate || !b.startDate || !b.endDate) continue;
+        if (toDateKey(a.startDate) > toDateKey(a.endDate)) continue;
+        if (toDateKey(b.startDate) > toDateKey(b.endDate)) continue;
+        if (rangesOverlap(a, b)) {
+          result[i].push(`Tanggal bentrok dengan rentang ke-${j + 1} (${formatRange(b)}).`);
+          result[j].push(`Tanggal bentrok dengan rentang ke-${i + 1} (${formatRange(a)}).`);
+        }
       }
     }
 
-    calculateDays();
-  }, [selectedTypeIds, startDate, endDate]);
+    return result;
+  }, [segments]);
 
-  const handleSelectLeaveType = (typeId: string) => {
+  const hasRowErrors = rowErrors.some((list) => list.length > 0);
+
+  // ---- Rincian kuota PER JENIS CUTI (agregasi hari semua rentang dengan jenis yang sama) ----
+  const quotaRows = useMemo(() => {
+    const daysByType = new Map<string, number>();
+
+    segments.forEach((segment, index) => {
+      if (!segment.leaveTypeId) return;
+      const days = calc.segments.find((s) => s.index === index)?.totalDays ?? 0;
+      daysByType.set(segment.leaveTypeId, (daysByType.get(segment.leaveTypeId) ?? 0) + days);
+    });
+
+    return Array.from(daysByType.entries()).map(([typeId, days]) => {
+      const type = leaveTypes.find((t) => t.id === typeId);
+      const quota = typeQuotas[typeId];
+      const isUnlimited = !!quota && quota.totalQuota >= 999;
+      const remainingBefore = quota ? quota.totalQuota - quota.usedQuota : null;
+      const remainingAfter = remainingBefore !== null ? remainingBefore - days : null;
+
+      return {
+        typeId,
+        name: type?.name ?? 'Jenis cuti',
+        daysDescription: type?.daysDescription ?? null,
+        days,
+        totalQuota: quota ? quota.totalQuota : null,
+        usedQuota: quota ? quota.usedQuota : null,
+        remainingBefore,
+        remainingAfter,
+        isUnlimited,
+        hasQuota: !!quota,
+        isOver: remainingAfter !== null && !isUnlimited && remainingAfter < 0,
+      };
+    });
+  }, [segments, calc, typeQuotas, leaveTypes]);
+
+  const quotaOverRows = quotaRows.filter((row) => row.isOver);
+
+  // Rentang yang dipakai untuk menandai kalender (gabungan semua rentang valid).
+  const calendarRanges = segments
+    .filter((s) => s.startDate && s.endDate && toDateKey(s.endDate) >= toDateKey(s.startDate))
+    .map((s) => ({ startDate: s.startDate, endDate: s.endDate }));
+
+  const femaleOnlyTypes = [
+    'Cuti Bersalin',
+    'Cuti Bersalin dengan Keadaan Khusus',
+    'Cuti Gugur Kandungan',
+  ];
+
+  const updateSegment = (key: string, patch: Partial<SegmentDraft>) => {
+    setSegments((prev) =>
+      prev.map((segment) => (segment.key === key ? { ...segment, ...patch } : segment))
+    );
+  };
+
+  const handleSelectLeaveType = (key: string, typeId: string) => {
     const selectedType = leaveTypes.find((t) => t.id === typeId);
 
-    // Female specific leave types list
-    const femaleOnlyTypes = [
-      'Cuti Bersalin',
-      'Cuti Bersalin dengan Keadaan Khusus',
-      'Cuti Gugur Kandungan',
-    ];
-
     if (
-      userGender === 'MALE' &&
+      effectiveGender === 'MALE' &&
       selectedType &&
       femaleOnlyTypes.some((name) => selectedType.name.toLowerCase().includes(name.toLowerCase()))
     ) {
+      setMaleWarningTypeName(selectedType.name);
       setShowMaleWarningModal(true);
       return;
     }
 
-    // Single selection rule: selecting a type deselects any previously selected type
-    const newSelection = selectedTypeIds.includes(typeId) ? [] : [typeId];
-    setValue('leaveTypeIds', newSelection, { shouldValidate: true });
+    updateSegment(key, { leaveTypeId: typeId });
   };
 
-  // Rincian kuota per jenis cuti terpilih (dipakai / sisa sebelum / sisa sesudah).
-  // Semua jenis cuti memakai kuota per-jenis (tabel UserLeaveQuota via GET /api/quotas/<userId>),
-  // tidak ada lagi angka generik dari LeaveQuota.
-  const quotaRows = selectedTypeIds.map((typeId) => {
-    const type = leaveTypes.find((t) => t.id === typeId);
-    const quota = typeQuotas[typeId];
-    const isUnlimited = !!quota && quota.totalQuota >= 999;
-    const remainingBefore = quota ? quota.totalQuota - quota.usedQuota : null;
-    const remainingAfter = remainingBefore !== null ? remainingBefore - calculatedDays : null;
+  const handleAddSegment = () => {
+    const last = segments[segments.length - 1];
+    const start = last?.endDate ? shiftDateKey(last.endDate, 1) : todayKey();
+    setSegments((prev) => [
+      ...prev,
+      {
+        key: nextSegmentKey(),
+        leaveTypeId: last?.leaveTypeId || '',
+        startDate: start,
+        endDate: start,
+      },
+    ]);
+  };
 
-    return {
-      typeId,
-      name: type?.name ?? 'Jenis cuti',
-      daysDescription: type?.daysDescription ?? null,
-      totalQuota: quota ? quota.totalQuota : null,
-      usedQuota: quota ? quota.usedQuota : null,
-      remainingBefore,
-      remainingAfter,
-      isUnlimited,
-      hasQuota: !!quota,
-      isOver: remainingAfter !== null && !isUnlimited && remainingAfter < 0,
-    };
-  });
+  const handleRemoveSegment = (key: string) => {
+    setSegments((prev) => (prev.length <= 1 ? prev : prev.filter((s) => s.key !== key)));
+  };
 
-  const onSubmit = async (data: CreateLeaveRequestInput) => {
+  const onSubmit = async (data: FormValues) => {
     setErrorMsg(null);
 
     if (isAdmin && !selectedUserId) {
@@ -321,22 +534,23 @@ export default function CreateLeaveRequestPage() {
       return;
     }
 
-    if (!selectedTypeIds || selectedTypeIds.length === 0) {
-      setErrorMsg('Silakan pilih salah satu jenis cuti terlebih dahulu.');
+    if (hasRowErrors) {
+      const firstError = rowErrors.flat()[0];
+      setErrorMsg(`Periksa kembali daftar rentang tanggal. ${firstError}`);
       return;
     }
 
-    if (calculatedDays <= 0) {
+    if (calc.totalDays <= 0) {
       setErrorMsg(
-        'Rentang tanggal yang Anda pilih pada kalender tidak memiliki hari kerja efektif (contoh: hanya tanggal merah / akhir pekan). Silakan pilih hari kerja.'
+        'Total hari kerja efektif dari seluruh rentang adalah 0 (contoh: hanya tanggal merah / akhir pekan). Silakan pilih hari kerja.'
       );
       return;
     }
 
-    const insufficientQuota = quotaRows.find((row) => row.isOver);
-    if (insufficientQuota) {
+    if (quotaOverRows.length > 0) {
+      const row = quotaOverRows[0];
       setErrorMsg(
-        `Sisa kuota ${insufficientQuota.name} tidak mencukupi (Sisa: ${insufficientQuota.remainingBefore} Hari, Pengajuan: ${calculatedDays} Hari).`
+        `Sisa kuota ${row.name} tidak mencukupi (Sisa: ${row.remainingBefore} Hari, Pengajuan: ${row.days} Hari).`
       );
       return;
     }
@@ -344,21 +558,40 @@ export default function CreateLeaveRequestPage() {
     setSubmitting(true);
 
     try {
+      const payload = {
+        segments: segments.map((segment) => ({
+          leaveTypeId: segment.leaveTypeId,
+          startDate: segment.startDate,
+          endDate: segment.endDate,
+        })),
+        reason: data.reason,
+        attachmentUrl: data.attachmentUrl?.trim() ? data.attachmentUrl.trim() : null,
+        ...(isAdmin ? { userId: selectedUserId } : {}),
+      };
+
       const res = await fetch('/api/leave-requests', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(isAdmin ? { ...data, userId: selectedUserId } : data),
+        body: JSON.stringify(payload),
       });
 
       const json = await safeParseJson(res);
       if (!res.ok || !json.success) {
+        // Tampilkan pesan asli dari API (overlap / kuota / validasi), bukan pesan generik.
         throw new Error(json.message || 'Gagal membuat pengajuan cuti');
       }
 
-      router.push(isAdmin ? '/admin/leave-requests' : '/dashboard');
+      const createdId = json.data?.id;
+      if (createdId) {
+        router.push(
+          isAdmin ? `/admin/leave-requests/${createdId}` : `/leave-requests/${createdId}`
+        );
+      } else {
+        router.push(isAdmin ? '/admin/leave-requests' : '/dashboard');
+      }
       router.refresh();
-    } catch (err: any) {
-      setErrorMsg(err.message);
+    } catch (err) {
+      setErrorMsg(err instanceof Error ? err.message : 'Gagal membuat pengajuan cuti');
     } finally {
       setSubmitting(false);
     }
@@ -378,6 +611,13 @@ export default function CreateLeaveRequestPage() {
     return type.daysDescription || (type.defaultDays ? `${type.defaultDays} Hari` : 'Sesuai Ketentuan');
   };
 
+  const submitDisabled =
+    submitting ||
+    hasRowErrors ||
+    quotaOverRows.length > 0 ||
+    calc.totalDays <= 0 ||
+    (isAdmin && !selectedUserId);
+
   return (
     <div className="w-full space-y-6">
       {/* Top Action & Title */}
@@ -391,7 +631,7 @@ export default function CreateLeaveRequestPage() {
           <div>
             <h1 className="text-2xl font-extrabold text-slate-900 tracking-tight">Form Pengajuan Cuti</h1>
             <p className="text-xs text-slate-500">
-              Isi formulir di bawah ini untuk mengajukan cuti atau izin meninggalkan kerja.
+              Satu pengajuan boleh berisi beberapa rentang tanggal, masing-masing dengan jenis cutinya sendiri.
             </p>
           </div>
         </div>
@@ -434,157 +674,194 @@ export default function CreateLeaveRequestPage() {
             </div>
           )}
 
-          {/* Section 1: Jenis Cuti */}
-          <div className="w-full">
-            <div className="flex items-center justify-between mb-3">
+          {/* Section 1: Daftar Rentang Tanggal */}
+          <div className="w-full space-y-4">
+            <div className="flex flex-wrap items-center justify-between gap-2">
               <label className="block text-sm font-bold text-slate-900">
-                1. Pilih Jenis Cuti <span className="text-rose-500">*</span>
+                1. Daftar Rentang Tanggal <span className="text-rose-500">*</span>
               </label>
-              <span className="text-xs text-slate-400">Klik kartu untuk memilih jenis cuti</span>
+              <span className="text-xs text-slate-500">
+                Tiap rentang boleh berbeda jenis cuti. Tanggal boleh melompat hari.
+              </span>
             </div>
-
-            {errors.leaveTypeIds && (
-              <p className="mb-3 text-xs font-semibold text-rose-600">
-                {errors.leaveTypeIds.message}
-              </p>
-            )}
 
             {loadingLeaveTypes ? (
               <div className="py-8 text-center text-xs text-slate-400">Memuat jenis cuti...</div>
             ) : (
-              <div className="space-y-6 w-full">
-                {/* Category 1: CUTI */}
-                <div className="bg-slate-50/80 p-5 rounded-xl border border-slate-200/80 w-full">
-                  <h4 className="text-xs font-bold text-indigo-700 uppercase tracking-wider mb-4 flex items-center gap-2">
-                    <span className="w-2.5 h-2.5 rounded-full bg-indigo-600" /> Cuti
-                  </h4>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-3 gap-3.5 w-full">
-                    {cutiTypes.map((type) => {
-                      const isSelected = selectedTypeIds.includes(type.id);
-                      return (
-                        <div
-                          key={type.id}
-                          onClick={() => handleSelectLeaveType(type.id)}
-                          className={`p-3.5 rounded-xl border transition-all cursor-pointer select-none ${
-                            isSelected
-                              ? 'bg-indigo-50/90 border-indigo-500 ring-2 ring-indigo-500/30 shadow-sm'
-                              : 'bg-white border-slate-200 hover:border-indigo-300 hover:bg-slate-50/50'
-                          }`}
-                        >
-                          <div className="flex items-center space-x-3">
-                            <div
-                              className={`w-5 h-5 rounded-md border flex items-center justify-center transition-all ${
-                                isSelected
-                                  ? 'bg-indigo-600 border-indigo-600 text-white'
-                                  : 'border-slate-300 bg-white'
-                              }`}
-                            >
-                              {isSelected && <Check className="w-3.5 h-3.5 stroke-[3]" />}
-                            </div>
-                            <span
-                              className={`text-xs font-bold transition-colors ${
-                                isSelected ? 'text-indigo-950' : 'text-slate-800'
-                              }`}
-                            >
-                              {type.name}
-                            </span>
-                          </div>
+              <div className="space-y-3 w-full">
+                {segments.map((segment, index) => {
+                  const errorsForRow = rowErrors[index] ?? [];
+                  const segmentCalc = segCalc(index);
+                  const days = segmentCalc?.totalDays ?? 0;
+                  const holidaysCount = segmentCalc?.holidaysInRange?.length ?? 0;
+                  const weekendCount = segmentCalc?.weekendDaysCount ?? 0;
+                  const hasError = errorsForRow.length > 0;
+                  const selectedType = leaveTypes.find((t) => t.id === segment.leaveTypeId);
 
-                          <div className="mt-3 pt-2.5 border-t border-slate-100 flex items-center justify-between">
-                            <span className="text-[11px] font-medium text-slate-500">Sisa Kuota / Jatah:</span>
-                            <span
-                              className={`px-2 py-0.5 rounded-md text-[11px] font-extrabold transition-colors ${
-                                isSelected
-                                  ? 'bg-indigo-600 text-white border border-indigo-600'
-                                  : 'bg-indigo-100/70 text-indigo-900 border border-indigo-200'
-                              }`}
-                            >
-                              {getQuotaDisplay(type)}
+                  return (
+                    <div
+                      key={segment.key}
+                      data-testid={`segment-row-${index}`}
+                      className={`rounded-2xl border p-4 space-y-3 w-full animate-fadeIn ${
+                        hasError ? 'bg-rose-50/70 border-rose-300' : 'bg-slate-50/60 border-slate-200'
+                      }`}
+                    >
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <span className="text-xs font-extrabold text-slate-900 flex items-center gap-2">
+                          <CalendarRange className="w-4 h-4 text-indigo-600" /> Rentang {index + 1}
+                          {selectedType && (
+                            <span className="text-[11px] font-bold text-indigo-800 bg-indigo-100 border border-indigo-200 px-2 py-0.5 rounded-md">
+                              {selectedType.name}
                             </span>
-                          </div>
+                          )}
+                        </span>
+
+                        <div className="flex items-center gap-2">
+                          <span
+                            data-testid={`segment-days-${index}`}
+                            className={`text-[11px] font-extrabold px-2.5 py-1 rounded-md border ${
+                              days > 0
+                                ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
+                                : 'bg-slate-100 text-slate-500 border-slate-200'
+                            }`}
+                          >
+                            {days} hari kerja
+                          </span>
+                          {(weekendCount > 0 || holidaysCount > 0) && (
+                            <span className="hidden sm:inline text-[11px] font-semibold text-slate-500">
+                              {holidaysCount > 0 && `${holidaysCount} libur nasional`}
+                              {holidaysCount > 0 && weekendCount > 0 && ' · '}
+                              {weekendCount > 0 && `${weekendCount} akhir pekan`}
+                            </span>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => handleRemoveSegment(segment.key)}
+                            disabled={segments.length <= 1}
+                            title={
+                              segments.length <= 1
+                                ? 'Minimal satu rentang tanggal'
+                                : 'Hapus rentang ini'
+                            }
+                            aria-label={`Hapus rentang ${index + 1}`}
+                            className="p-2 rounded-lg border border-rose-200 text-rose-600 bg-white hover:bg-rose-50 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
                         </div>
-                      );
-                    })}
-                  </div>
-                </div>
+                      </div>
 
-                {/* Category 2: IZIN MENINGGALKAN */}
-                <div className="bg-slate-50/80 p-5 rounded-xl border border-slate-200/80 w-full">
-                  <h4 className="text-xs font-bold text-amber-700 uppercase tracking-wider mb-4 flex items-center gap-2">
-                    <span className="w-2.5 h-2.5 rounded-full bg-amber-600" /> Izin Meninggalkan
-                  </h4>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-3 gap-3.5 w-full">
-                    {izinTypes.map((type) => {
-                      const isSelected = selectedTypeIds.includes(type.id);
-                      return (
-                        <div
-                          key={type.id}
-                          onClick={() => handleSelectLeaveType(type.id)}
-                          className={`p-3.5 rounded-xl border transition-all cursor-pointer select-none ${
-                            isSelected
-                              ? 'bg-amber-50/90 border-amber-500 ring-2 ring-amber-500/30 shadow-sm'
-                              : 'bg-white border-slate-200 hover:border-amber-300 hover:bg-slate-50/50'
-                          }`}
-                        >
-                          <div className="flex items-center space-x-3">
-                            <div
-                              className={`w-5 h-5 rounded-md border flex items-center justify-center transition-all ${
-                                isSelected
-                                  ? 'bg-amber-600 border-amber-600 text-white'
-                                  : 'border-slate-300 bg-white'
-                              }`}
-                            >
-                              {isSelected && <Check className="w-3.5 h-3.5 stroke-[3]" />}
-                            </div>
-                            <span
-                              className={`text-xs font-bold transition-colors ${
-                                isSelected ? 'text-amber-950' : 'text-slate-800'
-                              }`}
-                            >
-                              {type.name}
-                            </span>
-                          </div>
-
-                          <div className="mt-3 pt-2.5 border-t border-slate-100 flex items-center justify-between">
-                            <span className="text-[11px] font-medium text-slate-500">Sisa Kuota / Jatah:</span>
-                            <span
-                              className={`px-2 py-0.5 rounded-md text-[11px] font-extrabold transition-colors ${
-                                isSelected
-                                  ? 'bg-amber-600 text-white border border-amber-600'
-                                  : 'bg-amber-100/70 text-amber-900 border border-amber-200'
-                              }`}
-                            >
-                              {getQuotaDisplay(type)}
-                            </span>
-                          </div>
+                      <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                        <div>
+                          <label className="block text-[11px] font-bold text-slate-600 mb-1">
+                            Jenis Cuti
+                          </label>
+                          <select
+                            data-testid={`segment-type-${index}`}
+                            value={segment.leaveTypeId}
+                            onChange={(e) => handleSelectLeaveType(segment.key, e.target.value)}
+                            className="w-full h-11 px-3 text-sm rounded-lg border border-slate-300 bg-white font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                          >
+                            <option value="">-- Pilih Jenis Cuti --</option>
+                            {cutiTypes.length > 0 && (
+                              <optgroup label="Cuti">
+                                {cutiTypes.map((type) => (
+                                  <option key={type.id} value={type.id}>
+                                    {type.name} ({getQuotaDisplay(type)})
+                                  </option>
+                                ))}
+                              </optgroup>
+                            )}
+                            {izinTypes.length > 0 && (
+                              <optgroup label="Izin Meninggalkan">
+                                {izinTypes.map((type) => (
+                                  <option key={type.id} value={type.id}>
+                                    {type.name} ({getQuotaDisplay(type)})
+                                  </option>
+                                ))}
+                              </optgroup>
+                            )}
+                          </select>
                         </div>
-                      );
-                    })}
-                  </div>
+
+                        <div>
+                          <label className="block text-[11px] font-bold text-slate-600 mb-1">
+                            Tanggal Mulai
+                          </label>
+                          <input
+                            type="date"
+                            data-testid={`segment-start-${index}`}
+                            value={segment.startDate}
+                            onChange={(e) =>
+                              updateSegment(segment.key, {
+                                startDate: e.target.value,
+                                endDate:
+                                  segment.endDate && e.target.value > segment.endDate
+                                    ? e.target.value
+                                    : segment.endDate,
+                              })
+                            }
+                            className="w-full h-11 px-3 text-sm rounded-lg border border-slate-300 bg-white font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                          />
+                        </div>
+
+                        <div>
+                          <label className="block text-[11px] font-bold text-slate-600 mb-1">
+                            Tanggal Selesai
+                          </label>
+                          <input
+                            type="date"
+                            data-testid={`segment-end-${index}`}
+                            value={segment.endDate}
+                            min={segment.startDate || undefined}
+                            onChange={(e) => updateSegment(segment.key, { endDate: e.target.value })}
+                            className="w-full h-11 px-3 text-sm rounded-lg border border-slate-300 bg-white font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                          />
+                        </div>
+                      </div>
+
+                      {hasError && (
+                        <ul className="space-y-1">
+                          {errorsForRow.map((message, i) => (
+                            <li
+                              key={`${segment.key}-err-${i}`}
+                              className="text-[11px] font-bold text-rose-700 flex items-start gap-1.5"
+                            >
+                              <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" /> {message}
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+                  );
+                })}
+
+                <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
+                  <Button type="button" variant="outline" size="sm" onClick={handleAddSegment}>
+                    <Plus className="w-4 h-4" /> Tambah Rentang Tanggal
+                  </Button>
+                  <span className="text-[11px] font-semibold text-slate-500">
+                    {segments.length} rentang · total {calc.totalDays} hari kerja
+                    {calculating ? ' (menghitung...)' : ''}
+                  </span>
                 </div>
               </div>
             )}
           </div>
 
-          {/* Section 2: Interactive Single Range Calendar */}
+          {/* Section 2: Kalender (pratinjau gabungan semua rentang) */}
           <div className="w-full space-y-4">
-            <div className="flex items-center justify-between">
+            <div className="flex flex-wrap items-center justify-between gap-2">
               <label className="block text-sm font-bold text-slate-900">
-                2. Kalender Rentang Cuti <span className="text-rose-500">*</span>
+                2. Kalender Rentang Cuti
               </label>
               <span className="text-xs font-extrabold text-indigo-900 bg-indigo-100 px-3 py-1.5 rounded-lg border border-indigo-200">
-                Periode Terpilih: {formatDate(startDate)} — {formatDate(endDate)}
+                {calendarRanges.length} rentang dipilih · {calc.totalDays} hari kerja
               </span>
             </div>
 
-            {/* Visual Interactive Month Calendar Component */}
             <CalendarRangePicker
-              startDate={startDate}
-              endDate={endDate}
-              onRangeChange={(start, end) => {
-                setValue('startDate', start, { shouldValidate: true });
-                setValue('endDate', end, { shouldValidate: true });
-              }}
+              ranges={calendarRanges}
               holidays={allHolidays}
               bookedDates={userBookedDates}
             />
@@ -600,21 +877,51 @@ export default function CreateLeaveRequestPage() {
                     Total Durasi Cuti Terhitung
                   </h4>
                   <p className="text-xs text-indigo-100 font-medium">
-                    {selectedTypeIds.length === 0
-                      ? '⚠️ Silakan klik jenis cuti di atas'
-                      : 'Jumlah hari kerja efektif yang memotong kuota cuti'}
+                    Akumulasi hari kerja efektif dari {segments.length} rentang tanggal
                   </p>
                 </div>
               </div>
 
               <div className="flex items-baseline gap-2 bg-white text-indigo-950 px-6 py-2.5 rounded-xl font-black shadow-sm">
-                <span className="text-3xl font-black text-indigo-600">{calculatedDays}</span>
+                <span
+                  data-testid="total-days"
+                  className="text-3xl font-black text-indigo-600"
+                >
+                  {calc.totalDays}
+                </span>
                 <span className="text-base font-extrabold text-slate-800">Hari Kerja</span>
               </div>
             </div>
 
+            {/* Rincian per rentang */}
+            {calc.segments.length > 0 && (
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 w-full">
+                {calc.segments.map((segmentCalc) => (
+                  <div
+                    key={`calc-${segmentCalc.index}`}
+                    className="p-3 rounded-xl bg-white border border-slate-200 text-xs"
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-extrabold text-slate-900">
+                        Rentang {segmentCalc.index + 1}
+                      </span>
+                      <span className="font-black text-indigo-700">
+                        {segmentCalc.totalDays} hari
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-slate-500 font-semibold mt-0.5">
+                      {segmentCalc.leaveTypeName || 'Jenis cuti belum dipilih'}
+                    </p>
+                    <p className="text-[11px] text-slate-500 font-medium">
+                      {formatRange(segmentCalc)}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            )}
+
             {/* Rincian Tanggal Merah & Libur Terdeteksi */}
-            {(holidaysInRange.length > 0 || weekendDaysCount > 0) && (
+            {(calc.holidaysInRange.length > 0 || calc.weekendDaysCount > 0) && (
               <div className="p-4 rounded-xl bg-indigo-50/80 border border-indigo-200 space-y-3 w-full animate-fadeIn">
                 <div className="flex items-center justify-between border-b border-indigo-200/80 pb-2">
                   <span className="text-xs font-extrabold text-indigo-950 flex items-center gap-2">
@@ -626,8 +933,7 @@ export default function CreateLeaveRequestPage() {
                 </div>
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                  {/* National Holidays List */}
-                  {holidaysInRange.map((h) => (
+                  {calc.holidaysInRange.map((h) => (
                     <div
                       key={h.date}
                       className="p-3 rounded-xl bg-rose-50 border border-rose-200 flex items-center justify-between text-xs"
@@ -645,15 +951,14 @@ export default function CreateLeaveRequestPage() {
                     </div>
                   ))}
 
-                  {/* Weekend Days Count */}
-                  {weekendDaysCount > 0 && (
+                  {calc.weekendDaysCount > 0 && (
                     <div className="p-3 rounded-xl bg-amber-50 border border-amber-200 flex items-center justify-between text-xs">
                       <div className="flex items-center gap-2.5">
                         <span className="w-3 h-3 rounded-full bg-amber-600 shrink-0" />
                         <div>
                           <span className="font-extrabold text-amber-950 text-sm">Akhir Pekan (Sabtu & Minggu)</span>
                           <p className="text-xs font-bold text-amber-800">
-                            Terdeteksi {weekendDaysCount} hari akhir pekan
+                            Terdeteksi {calc.weekendDaysCount} hari akhir pekan
                           </p>
                         </div>
                       </div>
@@ -667,24 +972,25 @@ export default function CreateLeaveRequestPage() {
             )}
           </div>
 
-          {/* Section 3: Rincian Kuota per Jenis Cuti Terpilih */}
+          {/* Section 3: Rincian Kuota per Jenis Cuti yang dipakai */}
           <div className="w-full space-y-3">
             <div className="flex items-center justify-between">
-              <label className="block text-sm font-bold text-slate-900">3. Rincian Kuota Cuti</label>
+              <label className="block text-sm font-bold text-slate-900">3. Rincian Kuota Cuti per Jenis</label>
               <span className="text-xs text-slate-400">
-                Otomatis mengikuti jenis cuti &amp; tanggal terpilih
+                Otomatis mengikuti jenis cuti &amp; rentang tanggal
               </span>
             </div>
 
             {quotaRows.length === 0 ? (
               <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 text-xs text-slate-500 font-medium">
-                Pilih jenis cuti terlebih dahulu untuk melihat rincian kuota (dipakai, sisa sebelum, dan sisa sesudah pengajuan).
+                Pilih jenis cuti pada daftar rentang untuk melihat rincian kuota (dipakai, sisa sebelum, dan sisa sesudah pengajuan).
               </div>
             ) : (
               <div className="space-y-3 w-full">
                 {quotaRows.map((row) => (
                   <div
                     key={row.typeId}
+                    data-testid={`quota-row-${row.typeId}`}
                     className={`rounded-2xl border p-4 w-full animate-fadeIn ${
                       row.isOver ? 'bg-rose-50/80 border-rose-300' : 'bg-white border-slate-200'
                     }`}
@@ -692,7 +998,7 @@ export default function CreateLeaveRequestPage() {
                     <div className="flex flex-wrap items-center justify-between gap-2 pb-2.5 border-b border-slate-100">
                       <span className="text-sm font-extrabold text-slate-900">{row.name}</span>
                       <span className="text-[11px] font-bold text-indigo-800 bg-indigo-50 border border-indigo-200 px-2.5 py-1 rounded-lg">
-                        Pengajuan ini: {calculatedDays} hari
+                        Pengajuan ini: {row.days} hari
                       </span>
                     </div>
 
@@ -810,14 +1116,37 @@ export default function CreateLeaveRequestPage() {
             </div>
           </div>
 
+          {/* Peringatan kuota (memblokir submit) */}
+          {quotaOverRows.length > 0 && (
+            <div className="p-4 rounded-xl bg-rose-50 border border-rose-300 flex items-start gap-3 text-rose-800 text-xs font-medium w-full">
+              <AlertTriangle className="w-5 h-5 text-rose-600 shrink-0 mt-0.5" />
+              <div>
+                <p className="font-black text-rose-900">Kuota tidak cukup</p>
+                <ul className="mt-1 space-y-0.5 font-semibold">
+                  {quotaOverRows.map((row) => (
+                    <li key={row.typeId}>
+                      {row.name}: pengajuan {row.days} hari, sisa {row.remainingBefore} hari →{' '}
+                      {row.remainingAfter} hari.
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            </div>
+          )}
+
           {/* Submit Action */}
-          <div className="pt-6 border-t border-slate-100 flex items-center justify-end gap-3 w-full">
+          <div className="pt-6 border-t border-slate-100 flex flex-col sm:flex-row items-center justify-end gap-3 w-full">
+            {hasRowErrors && (
+              <span className="text-[11px] font-bold text-rose-700 sm:mr-auto">
+                Perbaiki rentang tanggal yang ditandai merah sebelum mengajukan.
+              </span>
+            )}
             <Link href={isAdmin ? '/admin/leave-requests' : '/dashboard'}>
               <Button type="button" variant="outline" size="lg">
                 Batal
               </Button>
             </Link>
-            <Button type="submit" disabled={submitting} size="lg">
+            <Button type="submit" disabled={submitDisabled} size="lg">
               {submitting ? 'Mengirim Pengajuan...' : 'Ajukan Cuti'}
             </Button>
           </div>
@@ -837,11 +1166,10 @@ export default function CreateLeaveRequestPage() {
           </div>
 
           <div className="space-y-1">
-            <h3 className="text-xl font-black text-rose-950 tracking-tight">
-              Kau lanang cok
-            </h3>
+            <h3 className="text-xl font-black text-rose-950 tracking-tight">Kau lanang cok</h3>
             <p className="text-xs text-slate-600 leading-relaxed max-w-sm mx-auto font-semibold pt-1">
-              Jenis cuti ini (Cuti Bersalin / Cuti Gugur Kandungan) hanya diperuntukkan bagi karyawan berkategori perempuan.
+              Jenis cuti ini ({maleWarningTypeName || 'Cuti Bersalin / Cuti Gugur Kandungan'}) hanya
+              diperuntukkan bagi karyawan berkategori perempuan.
             </p>
           </div>
 

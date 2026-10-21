@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import {
   format,
   addMonths,
@@ -11,8 +11,6 @@ import {
   endOfWeek,
   eachDayOfInterval,
   isSameMonth,
-  isSameDay,
-  isWithinInterval,
   isSaturday,
   isSunday,
 } from 'date-fns';
@@ -30,35 +28,44 @@ interface BookedDate {
 }
 
 interface CalendarRangePickerProps {
-  startDate: string; // YYYY-MM-DD
-  endDate: string;   // YYYY-MM-DD
-  onRangeChange: (startDate: string, endDate: string) => void;
+  startDate?: string; // YYYY-MM-DD
+  endDate?: string;   // YYYY-MM-DD
+  /**
+   * Beberapa rentang sekaligus (multi-rentang). Bila diisi, kalender menandai
+   * gabungan seluruh tanggal dari semua rentang dan mengabaikan startDate/endDate.
+   */
+  ranges?: Array<{ startDate: string; endDate: string }>;
+  /** Bila tidak diberikan, kalender hanya jadi pratinjau (tidak bisa diklik). */
+  onRangeChange?: (startDate: string, endDate: string) => void;
   holidays?: Holiday[];
   bookedDates?: BookedDate[];
 }
 
 export function CalendarRangePicker({
-  startDate,
-  endDate,
+  startDate = '',
+  endDate = '',
+  ranges,
   onRangeChange,
   holidays = [],
   bookedDates = [],
 }: CalendarRangePickerProps) {
-  const initialDate = startDate ? new Date(startDate) : new Date();
+  const focusDate = startDate || (ranges && ranges.length > 0 ? ranges[0].startDate : '');
+  const initialDate = focusDate ? new Date(focusDate) : new Date();
   const [currentMonth, setCurrentMonth] = useState<Date>(
     isNaN(initialDate.getTime()) ? new Date() : initialDate
   );
 
   const [selectingStart, setSelectingStart] = useState<string | null>(startDate || null);
 
-  useEffect(() => {
-    if (startDate) {
-      const d = new Date(startDate);
-      if (!isNaN(d.getTime())) {
-        setCurrentMonth(d);
-      }
+  // Ikuti perubahan tanggal fokus tanpa effect: sesuaikan bulan yang ditampilkan saat render.
+  const [trackedFocusDate, setTrackedFocusDate] = useState<string>(focusDate);
+  if (focusDate !== trackedFocusDate) {
+    setTrackedFocusDate(focusDate);
+    const d = focusDate ? new Date(focusDate) : new Date(NaN);
+    if (!isNaN(d.getTime())) {
+      setCurrentMonth(d);
     }
-  }, [startDate]);
+  }
 
   const holidayMap = new Map<string, string>();
   holidays.forEach((h) => {
@@ -78,6 +85,7 @@ export function CalendarRangePicker({
   const days = eachDayOfInterval({ start: calendarStart, end: calendarEnd });
 
   const handleDateClick = (day: Date) => {
+    if (!onRangeChange) return;
     const dateStr = format(day, 'yyyy-MM-dd');
 
     if (!selectingStart || (startDate && endDate && startDate !== endDate)) {
@@ -99,8 +107,27 @@ export function CalendarRangePicker({
   const prevMonth = () => setCurrentMonth(subMonths(currentMonth, 1));
   const nextMonth = () => setCurrentMonth(addMonths(currentMonth, 1));
 
-  const startParsed = startDate ? new Date(startDate) : null;
-  const endParsed = endDate ? new Date(endDate) : null;
+  // Rentang yang ditandai: `ranges` (multi-rentang) bila ada, selain itu satu rentang startDate–endDate.
+  // Dibandingkan sebagai kunci tanggal 'yyyy-MM-dd' agar bebas pergeseran timezone.
+  const toDateKey = (value: string) => {
+    const match = value.match(/^(\d{4})-(\d{2})-(\d{2})/);
+    if (match) return `${match[1]}-${match[2]}-${match[3]}`;
+    const parsed = new Date(value);
+    return isNaN(parsed.getTime()) ? '' : format(parsed, 'yyyy-MM-dd');
+  };
+
+  const highlightRanges = (
+    ranges && ranges.length > 0
+      ? ranges
+      : startDate && endDate
+      ? [{ startDate, endDate }]
+      : []
+  )
+    .filter((r) => Boolean(r.startDate && r.endDate))
+    .map((r) => ({ startKey: toDateKey(r.startDate), endKey: toDateKey(r.endDate) }))
+    .filter((r) => r.startKey && r.endKey && r.startKey <= r.endKey);
+
+  const isInteractive = Boolean(onRangeChange);
 
   return (
     <div className="w-full bg-white rounded-2xl border border-slate-200 shadow-sm p-4 md:p-6 space-y-4">
@@ -115,7 +142,9 @@ export function CalendarRangePicker({
               {format(currentMonth, 'MMMM yyyy', { locale: localeID })}
             </h3>
             <p className="text-xs font-semibold text-slate-500">
-              Pilih Tanggal Mulai dan Tanggal Selesai pada kalender di bawah
+              {isInteractive
+                ? 'Pilih Tanggal Mulai dan Tanggal Selesai pada kalender di bawah'
+                : 'Tanggal yang dipakai pada pengajuan ini ditandai di bawah (pratinjau)'}
             </p>
           </div>
         </div>
@@ -164,14 +193,14 @@ export function CalendarRangePicker({
           const bookedLeaveType = bookedMap.get(dateStr);
           const isBooked = Boolean(bookedLeaveType);
 
-          const isSelectedStart = startParsed && isSameDay(day, startParsed);
-          const isSelectedEnd = endParsed && isSameDay(day, endParsed);
-
-          const isInRange =
-            startParsed &&
-            endParsed &&
-            startParsed < endParsed &&
-            isWithinInterval(day, { start: startParsed, end: endParsed });
+          const rangeHit = highlightRanges.find(
+            (r) => dateStr >= r.startKey && dateStr <= r.endKey
+          );
+          const isRangeStart = Boolean(rangeHit && dateStr === rangeHit.startKey);
+          const isRangeEnd = Boolean(rangeHit && dateStr === rangeHit.endKey);
+          const isSelectedStart = isRangeStart;
+          const isSelectedEnd = isRangeEnd;
+          const isInRange = Boolean(rangeHit);
 
           return (
             <div
@@ -184,7 +213,9 @@ export function CalendarRangePicker({
                   ? `🔴 Tanggal Merah: ${holidayName}`
                   : undefined
               }
-              className={`relative min-h-[54px] p-2 rounded-xl border flex flex-col items-center justify-between cursor-pointer select-none transition-all ${
+              className={`relative min-h-[54px] p-2 rounded-xl border flex flex-col items-center justify-between select-none transition-all ${
+                isInteractive ? 'cursor-pointer' : 'cursor-default'
+              } ${
                 !isCurrentMonth
                   ? 'opacity-25 border-transparent bg-slate-50/50'
                   : isSelectedStart || isSelectedEnd
