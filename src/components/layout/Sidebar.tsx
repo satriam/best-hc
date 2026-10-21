@@ -38,10 +38,32 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onClose,
 }) => {
   const closeButtonRef = useRef<HTMLButtonElement>(null);
+  const drawerRef = useRef<HTMLElement>(null);
 
   const handleClose = useCallback(() => {
     onClose?.();
   }, [onClose]);
+
+  // Kurung fokus keyboard (Tab / Shift+Tab) di dalam drawer selama terbuka.
+  const handleTrapTab = useCallback((event: React.KeyboardEvent<HTMLElement>) => {
+    if (event.key !== 'Tab') return;
+    const focusables = drawerRef.current?.querySelectorAll<HTMLElement>(
+      'a[href], button:not([disabled])'
+    );
+    if (!focusables || focusables.length === 0) return;
+
+    const first = focusables[0];
+    const last = focusables[focusables.length - 1];
+    const active = document.activeElement;
+
+    if (event.shiftKey && (active === first || !drawerRef.current?.contains(active))) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && active === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  }, []);
 
   // Drawer mobile: Esc untuk menutup, kunci scroll body, dan fokus ke tombol tutup.
   useEffect(() => {
@@ -91,9 +113,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
           />
           <aside
             id="app-sidebar-mobile"
+            ref={drawerRef}
             role="dialog"
             aria-modal="true"
             aria-label="Navigasi utama"
+            onKeyDown={handleTrapTab}
             className="fixed inset-y-0 left-0 z-50 w-64 max-w-[85vw] bg-slate-900 text-slate-300 flex flex-col h-full border-r border-slate-800 select-none shadow-2xl shadow-slate-950/50 animate-[drawer-in_200ms_ease-out]"
           >
             <SidebarContent

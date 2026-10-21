@@ -1,6 +1,6 @@
 'use client';
 
-import React from 'react';
+import React, { useEffect, useRef } from 'react';
 import { Menu, ShieldCheck, User } from 'lucide-react';
 
 interface HeaderProps {
@@ -17,11 +17,23 @@ export const Header: React.FC<HeaderProps> = ({
   onMenuClick,
   mobileNavOpen = false,
 }) => {
+  const menuButtonRef = useRef<HTMLButtonElement>(null);
+  const wasOpen = useRef(mobileNavOpen);
+
+  // Kembalikan fokus ke tombol hamburger setelah drawer ditutup.
+  useEffect(() => {
+    if (wasOpen.current && !mobileNavOpen) {
+      menuButtonRef.current?.focus();
+    }
+    wasOpen.current = mobileNavOpen;
+  }, [mobileNavOpen]);
+
   return (
     <header className="h-16 border-b border-slate-200 bg-white/80 backdrop-blur-md sticky top-0 z-20 px-4 md:px-8 flex items-center justify-between gap-3">
       <div className="flex items-center gap-2 md:gap-3 min-w-0">
         <button
           type="button"
+          ref={menuButtonRef}
           onClick={onMenuClick}
           aria-label="Buka menu navigasi"
           aria-expanded={mobileNavOpen}

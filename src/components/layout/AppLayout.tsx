@@ -29,7 +29,12 @@ export const AppLayout: React.FC<AppLayoutProps> = ({ children, user }) => {
         mobileOpen={mobileNavOpen}
         onClose={closeMobileNav}
       />
-      <div className="flex-1 flex flex-col min-w-0">
+      <div
+        className="flex-1 flex flex-col min-w-0"
+        // Saat drawer mobile terbuka, latar dibuat inert agar fokus keyboard
+        // terkurung di dalam drawer (tidak ada elemen di belakang yang bisa di-Tab).
+        inert={mobileNavOpen || undefined}
+      >
         <Header
           userName={user.name}
           userRole={user.role}
