@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { getSession } from '@/lib/auth';
 import { getAllUsers, getUserOptions, createUser } from '@/services/user.service';
 import { createUserSchema } from '@/schemas/user.schema';
+import { normalizeError } from '@/lib/api-error';
 
 export async function GET(request: Request) {
   const session = await getSession();
@@ -42,10 +43,8 @@ export async function POST(request: Request) {
       message: 'User berhasil dibuat',
       data: newUser,
     });
-  } catch (error: any) {
-    return NextResponse.json(
-      { success: false, message: error.message || 'Gagal membuat user' },
-      { status: 400 }
-    );
+  } catch (error: unknown) {
+    const { message, issues } = normalizeError(error, 'Gagal membuat user');
+    return NextResponse.json({ success: false, message, issues }, { status: 400 });
   }
 }
