@@ -63,6 +63,14 @@ interface LeaveRequestDetail {
       daysDescription?: string | null;
     };
   }>;
+  // Segmen multi-rentang (opsional — hanya tersedia bila API detail mengirimkannya)
+  segments?: Array<{
+    leaveTypeId: string;
+    totalDays: number;
+    startDate: string;
+    endDate: string;
+    order?: number;
+  }>;
 }
 
 interface HolidayDetail {
@@ -362,7 +370,7 @@ export default function LeaveRequestDetailPage({
             top: 0 !important;
             width: 100% !important;
             margin: 0 !important;
-            padding: 15px 20px !important;
+            padding: 6px 20px !important;
             background: white !important;
             color: black !important;
             font-family: Arial, Helvetica, sans-serif !important;
@@ -875,15 +883,78 @@ export default function LeaveRequestDetailPage({
           const dCell = `${c}width:105px;text-align:center;padding:2px;font-size:9px;vertical-align:middle;`;
           const mCell = `${c}width:105px;padding:3px;text-align:center;font-size:10px;background-color:#002060;color:#fff;font-weight:bold;-webkit-print-color-adjust:exact;print-color-adjust:exact;vertical-align:middle;`;
 
-          const cutiRowsHtml = cutiRows.map(r => `<tr style="height:23px"><td style="${xCell}">${r[0] || '&nbsp;'}</td><td style="${tCell}">${r[1]}</td><td style="${dCell}">${r[2] || '&nbsp;'}</td><td style="${dCell}">${r[3] || '&nbsp;'}</td></tr>`).join('');
-          const izinRowsHtml = izinRows.map(r => `<tr style="height:23px"><td style="${xCell}">${r[0] || '&nbsp;'}</td><td style="${tCell}">${r[1]}</td><td style="${dCell}">${r[2] || '&nbsp;'}</td><td style="${dCell}">${r[3] || '&nbsp;'}</td></tr>`).join('');
+          const cutiRowsHtml = cutiRows.map(r => `<tr style="height:20px"><td style="${xCell}">${r[0] || '&nbsp;'}</td><td style="${tCell}">${r[1]}</td><td style="${dCell}">${r[2] || '&nbsp;'}</td><td style="${dCell}">${r[3] || '&nbsp;'}</td></tr>`).join('');
+          const izinRowsHtml = izinRows.map(r => `<tr style="height:20px"><td style="${xCell}">${r[0] || '&nbsp;'}</td><td style="${tCell}">${r[1]}</td><td style="${dCell}">${r[2] || '&nbsp;'}</td><td style="${dCell}">${r[3] || '&nbsp;'}</td></tr>`).join('');
+
+          // ---- RINCIAN KUOTA PER JENIS CUTI (tabel UserLeaveQuota, bukan LeaveQuota generik) ----
+          // - APPROVED/DONE      : usedQuota sudah memuat pengajuan ini -> kuota terpakai SEBELUM = usedQuota - hari pengajuan ini.
+          // - ON_PROGRESS        : kuota belum dipotong -> sisa sesudah = proyeksi (sisa sebelum - hari diajukan).
+          // - REJECTED/CANCELLED : kuota tidak terpotong -> sisa sesudah = sisa sebelum.
+          const isCut = requestDetail.status === 'APPROVED' || requestDetail.status === 'DONE';
+          const isVoid = requestDetail.status === 'REJECTED' || requestDetail.status === 'CANCELLED';
+          const segs = requestDetail.segments ?? [];
+
+          const quotaPrint = (requestDetail.requestTypes ?? []).map(rt => {
+            const q = typeQuotas[rt.leaveType.id];
+            const segDays = segs
+              .filter(s => s.leaveTypeId === rt.leaveType.id)
+              .reduce((acc, s) => acc + (Number(s.totalDays) || 0), 0);
+            const days = segs.length > 0 ? segDays : requestDetail.totalDays;
+            const unlimited = !!q && q.totalQuota >= 999;
+            const usedBefore = q ? (isCut ? q.usedQuota - days : q.usedQuota) : null;
+            const before = q && usedBefore !== null ? q.totalQuota - usedBefore : null;
+            const after = before === null ? null : isVoid ? before : before - days;
+
+            return {
+              name: rt.leaveType.name,
+              days,
+              total: q ? q.totalQuota : null,
+              usedBefore,
+              before,
+              after,
+              unlimited,
+              missing: !q,
+            };
+          });
+
+          const quotaCell = `${c}padding:2px 6px;vertical-align:middle;font-size:10px;`;
+          const quotaLabel = `${quotaCell}width:58%;`;
+          const quotaValue = `${quotaCell}font-weight:bold;`;
+          const quotaHari = (v: number | null) => (v === null ? 'Sesuai Ketentuan' : `${v} hari`);
+
+          const quotaPrintHtml = quotaPrint.map((row) => {
+            const noQuota = row.missing || row.unlimited;
+            const totalTxt = row.missing ? 'Sesuai Ketentuan' : row.unlimited ? 'Tidak dibatasi' : `${row.total} hari`;
+            const usedTxt = noQuota ? totalTxt : quotaHari(row.usedBefore);
+            const beforeTxt = noQuota ? totalTxt : quotaHari(row.before);
+            const isOver = !noQuota && row.after !== null && row.after < 0;
+            const afterTxt = noQuota
+              ? totalTxt
+              : `${quotaHari(row.after)}${isOver ? ' (melebihi kuota)' : ''}`;
+
+            const note = isVoid
+              ? `Kuota tidak terpotong (pengajuan ${requestDetail.status})`
+              : row.missing
+              ? 'Jenis cuti ini belum memiliki data kuota pada tahun pengajuan (sesuai ketentuan).'
+              : row.unlimited
+              ? 'Jenis cuti ini tidak dibatasi kuota.'
+              : '';
+
+            return `
+        <tr style="height:17px"><td style="${quotaLabel}">Jenis Cuti</td><td style="${quotaValue}">${esc(row.name)}</td></tr>
+        <tr style="height:17px"><td style="${quotaLabel}">Jumlah Hari Diajukan</td><td style="${quotaValue}">${row.days} hari</td></tr>
+        <tr style="height:17px"><td style="${quotaLabel}">Kuota Terpakai (sebelum pengajuan ini)</td><td style="${quotaValue}">${usedTxt}</td></tr>
+        <tr style="height:17px"><td style="${quotaLabel}">Sisa Kuota Sebelum</td><td style="${quotaValue}">${beforeTxt}</td></tr>
+        <tr style="height:17px"><td style="${quotaLabel}"><strong>Sisa Kuota Sesudah</strong></td><td style="${quotaValue}${isOver ? 'color:#B00020;' : ''}">${afterTxt}</td></tr>
+        ${note ? `<tr><td colspan="2" style="${c}padding:2px 6px;font-size:9px;font-style:italic;">${esc(note)}</td></tr>` : ''}`;
+          }).join('');
 
           return `
 <style>
   .print-doc table.grid-table { border-collapse: separate !important; border-spacing: 0 !important; border-top: 1px solid #000 !important; border-left: 1px solid #000 !important; }
   .print-doc table.grid-table td, .print-doc table.grid-table th { border-right: 1px solid #000 !important; border-bottom: 1px solid #000 !important; border-top: 0 !important; border-left: 0 !important; empty-cells: show !important; box-sizing: border-box !important; }
 </style>
-<div class="print-doc" style="background:white;color:black;font-family:Arial,Helvetica,sans-serif;padding:16px;max-width:900px;margin:0 auto;font-size:12px;line-height:1.4">
+<div class="print-doc" style="background:white;color:black;font-family:Arial,Helvetica,sans-serif;padding:8px;max-width:900px;margin:0 auto;font-size:12px;line-height:1.4">
   <h2 style="text-align:center;font-weight:bold;font-size:13px;text-transform:uppercase;text-decoration:underline;margin-bottom:14px;color:#000">PERMOHONAN CUTI/IZIN MENINGGALKAN PEKERJAAN</h2>
   <div style="font-size:11px;line-height:1.6;margin-bottom:12px">
     <p style="font-weight:bold;margin-bottom:4px">Saya yang bertanda tangan di bawah ini:</p>
@@ -923,29 +994,40 @@ export default function LeaveRequestDetailPage({
       </tbody>
     </table>
   </div>
+  <div style="margin-top:8px;page-break-inside:avoid">
+    <table class="grid-table" cellspacing="0" cellpadding="0" style="width:100%;border-collapse:separate!important;border-spacing:0!important;font-size:10px;border-top:1px solid #000!important;border-left:1px solid #000!important">
+      <thead>
+        <tr>
+          <th colspan="2" style="${hdr}padding:3px;">RINCIAN KUOTA CUTI</th>
+        </tr>
+      </thead>
+      <tbody>${quotaPrintHtml}
+      </tbody>
+    </table>
+  </div>
   <div style="margin-top:10px;font-size:11px;line-height:1.5">
     <p style="font-weight:bold;margin-bottom:4px">Keterangan:</p>
-    <div style="min-height:48px;padding:6px 8px;border:1px solid #000;white-space:pre-wrap">${esc(requestDetail.reason)}</div>
+    <div style="min-height:38px;padding:6px 8px;border:1px solid #000;white-space:pre-wrap">${esc(requestDetail.reason)}</div>
   </div>
-  <div style="margin-top:45px;display:flex;justify-content:space-between;text-align:center;font-size:11px">
+  <div style="margin-top:30px;display:flex;justify-content:space-between;text-align:center;font-size:11px">
     <div style="width:30%">
       <p style="font-weight:bold;height:16px">Menyetujui,</p>
       <p style="font-size:10px;line-height:1.2;margin-top:3px;height:26px">Manajer Pengembangan Bisnis<br>&amp; Operational Excellence</p>
-      <div style="height:70px"></div>
+      <div style="height:58px"></div>
       <p style="font-weight:bold;text-decoration:underline">Dedy Supriyatmoko</p>
       <p style="font-size:10px;margin-top:1px">NP.1082100018</p>
     </div>
     <div style="width:30%">
       <p style="font-weight:bold;height:16px">Mengetahui,</p>
       <p style="font-size:10px;line-height:1.2;margin-top:3px;height:26px">Application Development &amp; Services/EIS<br>Department Head</p>
-      <div style="height:70px"></div>
+      <div style="height:58px"></div>
       <p style="font-weight:bold;text-decoration:underline">Dedek Apriyani</p>
       <p style="font-size:10px;margin-top:1px">NP. 8913230864</p>
     </div>
     <div style="width:30%">
       <p style="font-weight:bold;height:16px">Pemohon,</p>
       <p style="font-size:10px;line-height:1.2;margin-top:3px;height:26px">${unit}</p>
-      <div style="height:70px"></div>
+      <div style="height:58px"></div>
       <p style="font-weight:bold;text-decoration:underline">(${nama})</p>
       <p style="font-size:10px;margin-top:1px">NP. ${nip}</p>
     </div>
