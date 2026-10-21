@@ -56,68 +56,87 @@ npm install
 
 ## Environment Configuration
 
-Copy the environment template:
+**Development dan Production DIPISAH** — port dan database berbeda, data dev selalu mirror production.
+
+| Environment | Port | Database | Env file |
+|---|---|---|---|
+| Development | **3005** | `besthcm_dev` | `.env.development` |
+| Production | **3000** | `besthcm_prod` | `.env.production` |
+
+File `.env` hanya untuk nilai **shared** (mis. `AUTH_SECRET`) — **jangan** taruh `DATABASE_URL` di sana.
+Next.js otomatis memuat `.env.<NODE_ENV>`: `npm run dev` → `.env.development`, `npm start` → `.env.production`.
 
 ```bash
 cp .env.example .env
+cp .env.example .env.development   # lalu isi DATABASE_URL ke besthcm_dev
+cp .env.example .env.production    # lalu isi DATABASE_URL ke besthcm_prod
 ```
 
-Required environment variables in `.env`:
+| Variable | Description |
+|---|---|
+| `DATABASE_URL` | Connection string PostgreSQL (per environment) |
+| `AUTH_SECRET` | NextAuth encryption secret, minimal 32 karakter |
 
-| Variable | Description | Example / Default |
-|---|---|---|
-| `DATABASE_URL` | PostgreSQL connection string | `postgresql://postgres:postgres@localhost:5433/besthcm?schema=public` |
-| `AUTH_SECRET` | NextAuth encryption secret | At least 32 random characters |
-| `NEXTAUTH_URL` | Base application URL | `http://localhost:3000` |
-
-*Never commit your actual `.env` file.*
+*Never commit your actual `.env*` files.*
 
 ---
 
 ## Database Setup
 
-- **Engine**: PostgreSQL 17
-- **Database Name**: `besthcm`
-- **Default Port**: `5433` (DEV compose) or `5432`
+- **Engine**: PostgreSQL 16
+- **Databases**: `besthcm_prod` (produksi) dan `besthcm_dev` (development, mirror produksi)
 
-### Run Migrations & Generate Prisma Client
+### Buat database (instalasi baru)
+```bash
+docker compose up -d          # besthcm_prod dibuat otomatis, besthcm_dev lewat init script
+```
+
+Untuk instalasi yang sudah berjalan (container postgres dipakai bersama project lain, **jangan** di-recreate):
+```bash
+docker exec postgres psql -U postgres -d postgres -c "CREATE DATABASE besthcm_dev;"
+npm run db:mirror             # isi dev dengan salinan data production
+```
+
+### Perintah database
 
 ```bash
-# Push schema directly to the database
-npx prisma db push
-
-# Or run migrations
-npx prisma migrate dev
-
-# Generate Prisma Client
-npx prisma generate
+npm run db:status    # bandingkan prod vs dev (jumlah baris + cek mirror)
+npm run db:mirror    # segarkan dev dari prod (dev di-DROP lalu di-restore)
+npx prisma migrate dev        # buat/terapkan migrasi (di DB dev)
+npx prisma generate           # regenerate Prisma Client
 ```
+
+> **Penting**: setelah `prisma migrate` / `prisma generate`, **restart** dev server —
+> Prisma Client di memori bisa basi dan menyebabkan error `Unknown field ...`.
+
+### Hapus data testing
+```bash
+bash scripts/clean-test-data.sh          # target besthcm_prod (minta konfirmasi)
+DB=besthcm_dev bash scripts/clean-test-data.sh --yes
+```
+Yang dihapus: semua pengajuan cuti + segmen + riwayat kuota terkait, `usedQuota` direset.
+Yang disimpan: users, jenis cuti, jatah kuota, hari libur nasional, riwayat konfigurasi kuota.
 
 ---
 
 ## Running the Project
 
-### Standalone Mode (from project directory)
+### Development (port 3005, DB `besthcm_dev`)
 ```bash
 npm run dev
 ```
-The application will be accessible at: `http://localhost:3000`
+→ `http://localhost:3005`
+
+### Production (port 3000, DB `besthcm_prod`)
+```bash
+npm run build
+npm start
+```
+→ `http://localhost:3000`
 
 ### Multi-Project Workspace Mode (from Satr-dev root)
 ```bash
 npm run project -- best-hcm
-```
-
----
-
-## Production Build
-
-```bash
-# Build optimized production bundle
-npm run build
-
-# Start production server
-npm run start
 ```
 
 ---
