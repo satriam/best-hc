@@ -19,7 +19,6 @@ import {
   Trash2,
   UserPlus,
   Users,
-  X,
 } from 'lucide-react';
 import {
   DEFAULT_COMPANY,
@@ -32,6 +31,7 @@ import {
 } from './spkl-ui';
 import { findWorkerByNik, loadWorkers, rememberWorkers, type WorkerRecord } from './worker-directory';
 import { SignerUsersHint } from './SignerUsersHint';
+import { EmployeePicker } from './EmployeePicker';
 import type {
   CurrentUser,
   SpklDetail,
@@ -886,47 +886,18 @@ export function SpklForm({ mode, spklId, initial }: SpklFormProps) {
                     </td>
                     {isAdmin && (
                       <td className="px-2 py-2 align-top">
-                        <div className="flex items-start gap-1">
-                          <input
-                            list="spkl-employee-options"
-                            aria-label={`Karyawan baris ${index + 1}`}
-                            value={
-                              userOptions.find((option) => option.id === row.userId)?.name ??
-                              ''
-                            }
-                            onChange={(event) => {
-                              const typed = event.target.value.trim().toLowerCase();
-                              const match = userOptions.find(
-                                (option) =>
-                                  option.name.toLowerCase() === typed ||
-                                  `${option.nip ?? ''}`.toLowerCase() === typed
-                              );
-                              handleEmployeeChange(row.key, match?.id ?? '');
-                            }}
-                            placeholder="Cari nama / NIP…"
-                            className={inputClass}
-                          />
-                          {row.userId && (
-                            <button
-                              type="button"
-                              onClick={() => handleEmployeeChange(row.key, '')}
-                              title="Kosongkan (isi manual untuk pekerja alih daya)"
-                              aria-label={`Kosongkan karyawan baris ${index + 1}`}
-                              className="mt-0.5 p-1 rounded text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors"
-                            >
-                              <X className="w-3.5 h-3.5" />
-                            </button>
-                          )}
-                        </div>
-                        <p className="mt-0.5 text-[9.5px] text-slate-400">
-                          {row.userId ? 'Terhubung akun karyawan' : 'Manual (opsional)'}
-                        </p>
+                        <EmployeePicker
+                          users={userOptions}
+                          value={row.userId}
+                          onChange={(userId) => handleEmployeeChange(row.key, userId)}
+                          label={`Karyawan baris ${index + 1}`}
+                        />
                       </td>
                     )}
                     <td className="px-2 py-2 align-top">
                       {isAdmin ? (
                         <input
-                          list="spkl-worker-options"
+                          list={knownWorkers.length > 0 ? 'spkl-worker-options' : undefined}
                           aria-label={`NIK baris ${index + 1}`}
                           value={row.workerNik}
                           onChange={(event) => handleNikChange(row.key, event.target.value)}
@@ -1117,17 +1088,6 @@ export function SpklForm({ mode, spklId, initial }: SpklFormProps) {
             </option>
           ))}
         </datalist>
-
-        {isAdmin && (
-          <datalist id="spkl-employee-options">
-            {userOptions.map((option) => (
-              <option key={option.id} value={option.name}>
-                {option.nip && option.nip !== '-' ? `${option.nip} · ` : ''}
-                {option.email}
-              </option>
-            ))}
-          </datalist>
-        )}
 
         <div className="px-5 py-3 border-t border-slate-100 bg-slate-50/60 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
           <button
