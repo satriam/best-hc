@@ -2,7 +2,10 @@
 
 ## Project Overview
 
-Best HCM is an enterprise Human Capital Management web application built with **Next.js 16 (App Router)**, **Prisma ORM**, and **PostgreSQL**. It provides leave management, leave quota tracking, employee directory, and role-based approval workflows for organizational human resources.
+Best HCM is an enterprise Human Capital Management web application built with **Next.js 16 (App Router)**, **Prisma ORM**, and **PostgreSQL**. It provides leave management, leave quota tracking, employee directory, SPKL (overtime work order), and role-based approval workflows for organizational human resources.
+
+> **Branching**: `master` = production (Vercel), `development` = staging/preview.
+> Migrasi database otomatis jalan saat merge ke `master`. Detail: **[docs/BRANCHING-AND-DEPLOY.md](docs/BRANCHING-AND-DEPLOY.md)**.
 
 ### Main Technologies
 - **Framework**: Next.js 16 (App Router, Turbopack, React 19)
