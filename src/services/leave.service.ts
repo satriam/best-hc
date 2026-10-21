@@ -998,6 +998,32 @@ function resolveCurrentRemaining(
 }
 
 /**
+ * Total kuota satu jenis cuti (dijumlah lintas tahun kalau pengajuan melewati tahun).
+ * `known=false` → user belum punya baris `UserLeaveQuota` untuk jenis itu.
+ */
+function resolveTotalQuota(
+  userId: string,
+  leaveTypeId: string,
+  years: Set<number>,
+  quotaMap: Map<string, QuotaSnapshotRow>
+): { total: number; unlimited: boolean; known: boolean } {
+  let total = 0;
+  let found = false;
+
+  for (const year of years) {
+    const quota = quotaMap.get(`${userId}|${leaveTypeId}|${year}`);
+    if (!quota) continue;
+    if (quota.totalQuota >= UNLIMITED_QUOTA_THRESHOLD) {
+      return { total: quota.totalQuota, unlimited: true, known: true };
+    }
+    total += quota.totalQuota;
+    found = true;
+  }
+
+  return { total, unlimited: false, known: found };
+}
+
+/**
  * Tambahkan `quotaInfo` (rincian kuota per jenis cuti) ke setiap pengajuan.
  * Hanya 2 query tambahan untuk seluruh daftar (tanpa N+1): semua baris
  * `LeaveQuotaHistory` pengajuan-pengajuan itu + semua `UserLeaveQuota` user terkait,
@@ -1085,14 +1111,37 @@ export async function attachQuotaInfo<T extends QuotaInfoRequest>(
       let remainingAfter: number | null = current;
       let usedByThisRequest = 0;
 
-      if (rows.length > 0) {
+      // Sebagian baris history mewarisi baseline dari kuota tahunan generik — misalnya
+      // previousQuota=12 / newQuota=10 untuk jenis cuti yang kuotanya hanya 2 hari.
+      // Angka seperti itu mustahil secara data (melebihi total kuota jenisnya) dan membuat
+      // rincian kuota menyesatkan, jadi baris tersebut DIABAIKAN di sini. Barisnya tetap
+      // tersimpan sebagai audit trail (ditandai oleh script rekonsiliasi).
+      const typeQuota = resolveTotalQuota(
+        req.userId,
+        leaveTypeId,
+        years.get(leaveTypeId) ?? new Set<number>(),
+        quotaMap
+      );
+      const usableRows =
+        typeQuota.unlimited || !typeQuota.known
+          ? rows
+          : rows.filter((row) => row.previousQuota <= typeQuota.total && row.newQuota <= typeQuota.total);
+
+      if (usableRows.length > 0) {
         // Sudah memotong kuota: previousQuota dari baris paling awal,
         // newQuota dari baris paling akhir, dan seluruh changeAmount dijumlahkan
         // (mis. potong lalu dikembalikan sebagian).
         statusAffectsQuota = true;
-        previousRemaining = rows[0].previousQuota;
-        remainingAfter = rows[rows.length - 1].newQuota;
-        usedByThisRequest = -rows.reduce((sum, row) => sum + row.changeAmount, 0);
+        previousRemaining = usableRows[0].previousQuota;
+        remainingAfter = usableRows[usableRows.length - 1].newQuota;
+        usedByThisRequest = -usableRows.reduce((sum, row) => sum + row.changeAmount, 0);
+      } else if (rows.length > 0 && (req.status === LeaveStatus.APPROVED || req.status === LeaveStatus.DONE)) {
+        // Semua baris history tidak valid: hitung mundur dari kuota live, bukan dari snapshot
+        // legacy. Sisa sebelum pengajuan = sisa sekarang + hari yang dipotong pengajuan ini.
+        statusAffectsQuota = true;
+        usedByThisRequest = daysRequested;
+        previousRemaining = current === null ? null : current + daysRequested;
+        remainingAfter = current;
       }
 
       if (unlimited) {
