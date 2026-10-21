@@ -2,7 +2,7 @@ import { prisma } from '@/lib/db';
 import { LeaveStatus, QuotaHistoryType, CalculationType } from '@prisma/client';
 import { calculateLeaveDays } from '@/lib/calculation';
 import { getHolidayDatesSet } from '@/services/holiday.service';
-import { CreateLeaveRequestPayload, formatDateId } from '@/schemas/leave.schema';
+import { CreateLeaveRequestPayload, formatDateId, rangesOverlap } from '@/schemas/leave.schema';
 
 /**
  * Segment yang sudah dinormalisasi (tanggal sudah berupa Date).
@@ -80,12 +80,6 @@ export function computeSegments(
       holidayDatesSet
     );
 
-    if (totalDays <= 0) {
-      throw new Error(
-        `Rentang ${formatDateId(segment.startDate)} - ${formatDateId(segment.endDate)} (${leaveType.name}) tidak mengandung hari cuti yang dapat dihitung. Periksa kembali tanggal dan jenis cutinya.`
-      );
-    }
-
     return { ...segment, totalDays };
   });
 }
@@ -102,6 +96,59 @@ export function buildEnvelope(segments: ComputedSegment[]) {
     totalDays: segments.reduce((sum, s) => sum + s.totalDays, 0),
   };
 }
+
+interface SegmentLike {
+  leaveTypeId: string;
+  startDate: Date;
+  endDate: Date;
+  totalDays: number;
+}
+
+interface TypeDayGroup {
+  leaveTypeId: string;
+  year: number;
+  days: number;
+  ranges: Array<{ startDate: Date; endDate: Date }>;
+}
+
+/**
+ * Kelompokkan hari per (jenis cuti, tahun) dari daftar segment.
+ * Dipakai untuk cek kuota & potong/refund kuota PER JENIS CUTI.
+ */
+export function groupDaysByTypeAndYear(segments: SegmentLike[]): TypeDayGroup[] {
+  const map = new Map<string, TypeDayGroup>();
+
+  for (const segment of segments) {
+    const year = segment.startDate.getFullYear();
+    const key = `${segment.leaveTypeId}|${year}`;
+    const entry =
+      map.get(key) ?? { leaveTypeId: segment.leaveTypeId, year, days: 0, ranges: [] };
+    entry.days += segment.totalDays;
+    entry.ranges.push({ startDate: segment.startDate, endDate: segment.endDate });
+    map.set(key, entry);
+  }
+
+  return Array.from(map.values());
+}
+
+/** "01/10/2026 - 03/10/2026, 10/10/2026 - 11/10/2026" */
+export function describeRanges(ranges: Array<{ startDate: Date; endDate: Date }>): string {
+  return ranges
+    .map((r) => `${formatDateId(r.startDate)} - ${formatDateId(r.endDate)}`)
+    .join(', ');
+}
+
+const STATUS_LABEL: Record<string, string> = {
+  ON_PROGRESS: 'Menunggu Persetujuan',
+  APPROVED: 'Disetujui',
+  DONE: 'Selesai',
+  REJECTED: 'Ditolak',
+  CANCELLED: 'Dibatalkan',
+};
+
+/** Nama jenis cuti tahunan (dipakai untuk sinkronisasi kuota tahunan generik). */
+const ANNUAL_LEAVE_NAME = 'Cuti Tahunan';
+const UNLIMITED_QUOTA_THRESHOLD = 999;
 
 export interface LeaveFilterOptions {
   userId?: string;
@@ -151,70 +198,81 @@ export async function createLeaveRequest(userId: string, input: CreateLeaveReque
   const endDate = envelope.endDate;
   const totalDays = envelope.totalDays;
 
+  if (totalDays <= 0) {
+    throw new Error(
+      'Total hari cuti 0 hari. Periksa kembali rentang tanggal dan jenis cuti yang dipilih (akhir pekan / hari libur tidak dihitung untuk jenis cuti hari kerja).'
+    );
+  }
+
   // Pivot jenis cuti (unik) — tetap diisi demi kompatibilitas list/filter lama
   const requestTypeIds = isLegacy
     ? unique(input.leaveTypeIds ?? segmentTypeIds)
     : segmentTypeIds;
 
-  // Check for overlapping active or completed leave requests for this user (ON_PROGRESS, APPROVED, or DONE)
-  const overlappingRequest = await prisma.leaveRequest.findFirst({
+  // 4. Cek overlap PER SEGMENT terhadap pengajuan lain milik user
+  //    (bukan hanya envelope, supaya rentang yang lompat tetap terdeteksi)
+  const conflictingSegments = await prisma.leaveRequestSegment.findMany({
     where: {
-      userId,
-      status: { in: [LeaveStatus.ON_PROGRESS, LeaveStatus.APPROVED, LeaveStatus.DONE] },
-      deletedAt: null,
-      AND: [
-        { startDate: { lte: endDate } },
-        { endDate: { gte: startDate } },
-      ],
+      leaveRequest: {
+        userId,
+        deletedAt: null,
+        status: { in: [LeaveStatus.ON_PROGRESS, LeaveStatus.APPROVED, LeaveStatus.DONE] },
+      },
     },
     include: {
-      requestTypes: {
-        include: {
-          leaveType: true,
-        },
-      },
+      leaveType: true,
+      leaveRequest: { select: { id: true, status: true } },
     },
   });
 
-  if (overlappingRequest) {
-    const typesName = overlappingRequest.requestTypes.map((rt) => rt.leaveType.name).join(', ');
-    const formattedStart = overlappingRequest.startDate.toISOString().split('T')[0];
-    const formattedEnd = overlappingRequest.endDate.toISOString().split('T')[0];
-
-    throw new Error(
-      `Anda sudah memiliki pengajuan/riwayat cuti (${typesName}) pada rentang tanggal ${formattedStart} s/d ${formattedEnd}. Silakan pilih tanggal lain.`
+  for (const segment of computedSegments) {
+    const conflict = conflictingSegments.find((existing) =>
+      rangesOverlap(
+        { startDate: segment.startDate, endDate: segment.endDate },
+        { startDate: existing.startDate, endDate: existing.endDate }
+      )
     );
-  }
 
-  // Check remaining quota for CUTI type requests
-  const isCutiType = leaveTypes.some((t) => t.category === 'CUTI' || t.name === 'Cuti Tahunan');
-  if (isCutiType) {
-    const userQuota = await prisma.leaveQuota.findUnique({ where: { userId } });
-    const remainingQuota = userQuota ? userQuota.totalQuota - userQuota.usedQuota : 12;
-    if (totalDays > remainingQuota) {
+    if (conflict) {
+      const segmentType = leaveTypeMap.get(segment.leaveTypeId);
+      const conflictStatus = STATUS_LABEL[conflict.leaveRequest.status] ?? conflict.leaveRequest.status;
       throw new Error(
-        `Sisa kuota cuti Anda tidak mencukupi (Sisa Kuota: ${remainingQuota} Hari, Pengajuan: ${totalDays} Hari).`
+        `Rentang ${formatDateId(segment.startDate)} - ${formatDateId(segment.endDate)} (${segmentType?.name ?? 'Cuti'}) bentrok dengan pengajuan yang sudah ada: ${conflict.leaveType.name} ${formatDateId(conflict.startDate)} - ${formatDateId(conflict.endDate)} (status: ${conflictStatus}). Silakan pilih tanggal lain.`
       );
     }
   }
 
-  // Check remaining per-leave-type quota (finite quotas only)
-  const requestYear = startDate.getFullYear();
-  for (const lt of leaveTypes) {
+  // 5. Cek kuota PER JENIS CUTI (bukan kuota generik)
+  const daysByType = groupDaysByTypeAndYear(computedSegments);
+  const genericQuota = await prisma.leaveQuota.findUnique({ where: { userId } });
+  const genericRemaining = genericQuota ? genericQuota.totalQuota - genericQuota.usedQuota : 12;
+
+  for (const group of daysByType) {
+    const leaveType = leaveTypeMap.get(group.leaveTypeId);
+    if (!leaveType) continue;
+
     const typeQuota = await prisma.userLeaveQuota.findFirst({
-      where: { userId, leaveTypeId: lt.id, year: requestYear },
+      where: { userId, leaveTypeId: group.leaveTypeId, year: group.year },
     });
-    if (typeQuota && typeQuota.totalQuota < 999) {
+
+    if (typeQuota && typeQuota.totalQuota < UNLIMITED_QUOTA_THRESHOLD) {
       const remaining = typeQuota.totalQuota - typeQuota.usedQuota;
-      if (totalDays > remaining) {
+      if (group.days > remaining) {
         throw new Error(
-          `Sisa kuota ${lt.name} tidak mencukupi (Sisa: ${remaining} Hari, Pengajuan: ${totalDays} Hari).`
+          `Sisa kuota ${leaveType.name} tidak mencukupi (Sisa: ${remaining} Hari, Pengajuan: ${group.days} Hari pada rentang ${describeRanges(group.ranges)}).`
+        );
+      }
+    } else if (!typeQuota && leaveType.category === 'CUTI') {
+      // Fallback kompatibilitas: belum ada kuota per jenis → pakai kuota tahunan generik
+      if (group.days > genericRemaining) {
+        throw new Error(
+          `Sisa kuota ${leaveType.name} tidak mencukupi (Sisa: ${genericRemaining} Hari, Pengajuan: ${group.days} Hari pada rentang ${describeRanges(group.ranges)}).`
         );
       }
     }
   }
 
-  // 4. Simpan pengajuan + segment (nested create) + pivot jenis cuti
+  // 6. Simpan pengajuan + segment (nested create) + pivot jenis cuti
   return prisma.leaveRequest.create({
     data: {
       userId,
@@ -352,65 +410,113 @@ export async function updateLeaveRequest(
     const endDate = envelope.endDate;
     const newTotalDays = envelope.totalDays;
 
+    if (newTotalDays <= 0) {
+      throw new Error(
+        'Total hari cuti 0 hari. Periksa kembali rentang tanggal dan jenis cuti yang dipilih.'
+      );
+    }
+
     const requestTypeIds = hasSegmentsInput
       ? segmentTypeIds
       : input.leaveTypeIds?.length
         ? unique(input.leaveTypeIds)
         : segmentTypeIds;
 
-    // Business Logic for APPROVED request update (Handling Difference in Days)
+    // Cek overlap PER SEGMENT terhadap pengajuan lain (kecuali pengajuan ini sendiri)
+    const conflictingSegments = await tx.leaveRequestSegment.findMany({
+      where: {
+        leaveRequestId: { not: requestId },
+        leaveRequest: {
+          userId: existing.userId,
+          deletedAt: null,
+          status: { in: [LeaveStatus.ON_PROGRESS, LeaveStatus.APPROVED, LeaveStatus.DONE] },
+        },
+      },
+      include: { leaveType: true, leaveRequest: { select: { id: true, status: true } } },
+    });
+
+    for (const segment of computedSegments) {
+      const conflict = conflictingSegments.find((existingSegment) =>
+        rangesOverlap(
+          { startDate: segment.startDate, endDate: segment.endDate },
+          { startDate: existingSegment.startDate, endDate: existingSegment.endDate }
+        )
+      );
+
+      if (conflict) {
+        const segmentType = leaveTypeMap.get(segment.leaveTypeId);
+        const conflictStatus =
+          STATUS_LABEL[conflict.leaveRequest.status] ?? conflict.leaveRequest.status;
+        throw new Error(
+          `Rentang ${formatDateId(segment.startDate)} - ${formatDateId(segment.endDate)} (${
+            segmentType?.name ?? 'Cuti'
+          }) bentrok dengan pengajuan lain: ${conflict.leaveType.name} ${formatDateId(
+            conflict.startDate
+          )} - ${formatDateId(conflict.endDate)} (status: ${conflictStatus}).`
+        );
+      }
+    }
+
+    // Perubahan pada pengajuan yang sudah APPROVED → sesuaikan kuota PER JENIS CUTI
     if (existing.status === LeaveStatus.APPROVED) {
-      const oldDays = existing.totalDays;
-      const diff = newTotalDays - oldDays;
+      const leaveTypeNameById = new Map<string, string>();
+      existing.segments.forEach((s) => leaveTypeNameById.set(s.leaveTypeId, s.leaveType.name));
+      leaveTypes.forEach((t) => leaveTypeNameById.set(t.id, t.name));
 
-      if (diff !== 0 && existing.user.quota) {
-        const quota = existing.user.quota;
-        const currentRemaining = quota.totalQuota - quota.usedQuota;
+      const groupKey = (g: { leaveTypeId: string; year: number }) => `${g.leaveTypeId}|${g.year}`;
+      const oldGroups = groupDaysByTypeAndYear(existing.segments);
+      const newGroups = groupDaysByTypeAndYear(computedSegments);
+      const oldMap = new Map(oldGroups.map((g) => [groupKey(g), g]));
+      const newMap = new Map(newGroups.map((g) => [groupKey(g), g]));
 
-        if (diff > 0) {
-          // Days increased -> require more quota
-          if (diff > currentRemaining) {
+      for (const key of unique([...oldMap.keys(), ...newMap.keys()])) {
+        const oldGroup = oldMap.get(key);
+        const newGroup = newMap.get(key);
+        const diff = (newGroup?.days ?? 0) - (oldGroup?.days ?? 0);
+        if (diff === 0) continue;
+
+        const leaveTypeId = (newGroup ?? oldGroup)!.leaveTypeId;
+        const year = (newGroup ?? oldGroup)!.year;
+        const typeName = leaveTypeNameById.get(leaveTypeId) ?? 'Cuti';
+        const ranges = newGroup?.ranges ?? oldGroup?.ranges ?? [];
+
+        const typeQuota = await tx.userLeaveQuota.findFirst({
+          where: { userId: existing.userId, leaveTypeId, year },
+        });
+
+        if (typeQuota) {
+          const remaining = typeQuota.totalQuota - typeQuota.usedQuota;
+          if (diff > remaining) {
             throw new Error(
-              `Sisa kuota tidak mencukupi untuk penambahan hari (${diff} hari dibutuhkan, sisa ${currentRemaining} hari)`
+              `Sisa kuota ${typeName} tidak mencukupi untuk penambahan ${diff} hari (sisa ${remaining} hari).`
             );
           }
 
-          // Deduct quota
-          await tx.leaveQuota.update({
-            where: { userId: existing.userId },
-            data: { usedQuota: quota.usedQuota + diff },
+          await tx.userLeaveQuota.update({
+            where: { id: typeQuota.id },
+            data: { usedQuota: Math.max(0, typeQuota.usedQuota + diff) },
           });
 
           await tx.leaveQuotaHistory.create({
             data: {
               userId: existing.userId,
               leaveRequestId: existing.id,
-              previousQuota: currentRemaining,
+              previousQuota: remaining,
               changeAmount: -diff,
-              newQuota: currentRemaining - diff,
+              newQuota: remaining - diff,
               type: QuotaHistoryType.LEAVE_DAYS_UPDATED,
-              description: `Perubahan tanggal pengajuan cuti disetujui (bertambah ${diff} hari)`,
+              description: `Perubahan rentang pengajuan disetujui — ${typeName} (${describeRanges(ranges)}): ${
+                diff > 0 ? 'bertambah' : 'berkurang'
+              } ${Math.abs(diff)} Hari`,
             },
           });
-        } else {
-          // Days decreased -> refund quota
-          const refund = Math.abs(diff);
+        }
 
+        // Sinkronkan kuota tahunan generik (LeaveQuota) hanya untuk Cuti Tahunan
+        if (typeName === ANNUAL_LEAVE_NAME && existing.user.quota) {
           await tx.leaveQuota.update({
             where: { userId: existing.userId },
-            data: { usedQuota: quota.usedQuota - refund },
-          });
-
-          await tx.leaveQuotaHistory.create({
-            data: {
-              userId: existing.userId,
-              leaveRequestId: existing.id,
-              previousQuota: currentRemaining,
-              changeAmount: refund,
-              newQuota: currentRemaining + refund,
-              type: QuotaHistoryType.LEAVE_DAYS_UPDATED,
-              description: `Perubahan tanggal pengajuan cuti disetujui (berkurang ${refund} hari)`,
-            },
+            data: { usedQuota: Math.max(0, existing.user.quota.usedQuota + diff) },
           });
         }
       }
@@ -462,6 +568,7 @@ export async function updateLeaveStatus(
       include: {
         user: { include: { quota: true } },
         requestTypes: { include: { leaveType: true } },
+        segments: { include: { leaveType: true }, orderBy: { order: 'asc' } },
       },
     });
 
@@ -477,97 +584,172 @@ export async function updateLeaveStatus(
     }
 
     const userId = request.userId;
-    const days = request.totalDays;
     const userQuota = request.user.quota;
 
     if (!userQuota) {
       throw new Error('Data kuota user tidak ditemukan');
     }
 
-    const currentRemaining = userQuota.totalQuota - userQuota.usedQuota;
-    const leaveTypeNames = request.requestTypes.map((rt) => rt.leaveType.name).join(', ');
+    // Rincian hari PER JENIS CUTI dari segment (fallback ke requestTypes untuk data sangat lama)
+    const segmentsForQuota =
+      request.segments.length > 0
+        ? request.segments
+        : request.requestTypes.map((rt) => ({
+            leaveTypeId: rt.leaveTypeId,
+            leaveType: rt.leaveType,
+            startDate: request.startDate,
+            endDate: request.endDate,
+            totalDays: request.totalDays,
+          }));
 
-    // 1. Transition: ON_PROGRESS / REJECTED / CANCELLED -> (APPROVED or DONE)
-    if (
+    const daysByType = groupDaysByTypeAndYear(segmentsForQuota);
+    const typeNameById = new Map<string, string>();
+    segmentsForQuota.forEach((s) => typeNameById.set(s.leaveTypeId, s.leaveType.name));
+    request.requestTypes.forEach((rt) => typeNameById.set(rt.leaveTypeId, rt.leaveType.name));
+
+    const isDeducting =
       previousStatus !== LeaveStatus.APPROVED &&
       previousStatus !== LeaveStatus.DONE &&
-      (newStatus === LeaveStatus.APPROVED || newStatus === LeaveStatus.DONE)
-    ) {
-      if (days > currentRemaining) {
-        throw new Error(
-          `Kuota cuti user tidak mencukupi (Sisa: ${currentRemaining} Hari, Pengajuan: ${days} Hari)`
-        );
-      }
+      (newStatus === LeaveStatus.APPROVED || newStatus === LeaveStatus.DONE);
 
-      // Deduct Quota
-      await tx.leaveQuota.update({
-        where: { userId },
-        data: { usedQuota: userQuota.usedQuota + days },
-      });
-
-      // Sync per-leave-type UserLeaveQuota record
-      const requestYear = request.startDate.getFullYear();
-      for (const rt of request.requestTypes) {
-        await tx.userLeaveQuota.updateMany({
-          where: { userId, leaveTypeId: rt.leaveTypeId, year: requestYear },
-          data: { usedQuota: { increment: days } },
-        });
-      }
-
-      // Record History
-      await tx.leaveQuotaHistory.create({
-        data: {
-          userId,
-          leaveRequestId: request.id,
-          previousQuota: currentRemaining,
-          changeAmount: -days,
-          newQuota: currentRemaining - days,
-          type: QuotaHistoryType.LEAVE_APPROVED,
-          description: `Pengajuan cuti disetujui / diselesaikan (${leaveTypeNames}: ${days} Hari)`,
-        },
-      });
-    }
-    // 2. Transition: (APPROVED or DONE) -> CANCELLED or REJECTED (Refund Quota)
-    else if (
+    const isRefunding =
       (previousStatus === LeaveStatus.APPROVED || previousStatus === LeaveStatus.DONE) &&
       newStatus !== LeaveStatus.APPROVED &&
-      newStatus !== LeaveStatus.DONE
-    ) {
-      await tx.leaveQuota.update({
-        where: { userId },
-        data: { usedQuota: userQuota.usedQuota - days },
-      });
+      newStatus !== LeaveStatus.DONE;
 
-      // Sync per-leave-type UserLeaveQuota record
-      const requestYear = request.startDate.getFullYear();
-      for (const rt of request.requestTypes) {
-        await tx.userLeaveQuota.updateMany({
-          where: { userId, leaveTypeId: rt.leaveTypeId, year: requestYear },
-          data: { usedQuota: { decrement: days } },
+    if (isDeducting) {
+      // 1. Potong kuota PER JENIS CUTI
+      for (const group of daysByType) {
+        const typeName = typeNameById.get(group.leaveTypeId) ?? 'Cuti';
+        const typeQuota = await tx.userLeaveQuota.findFirst({
+          where: { userId, leaveTypeId: group.leaveTypeId, year: group.year },
+        });
+
+        if (!typeQuota) {
+          continue;
+        }
+
+        const remaining = typeQuota.totalQuota - typeQuota.usedQuota;
+        if (group.days > remaining && typeQuota.totalQuota < UNLIMITED_QUOTA_THRESHOLD) {
+          throw new Error(
+            `Sisa kuota ${typeName} tidak mencukupi (Sisa: ${remaining} Hari, Pengajuan: ${group.days} Hari pada rentang ${describeRanges(group.ranges)})`
+          );
+        }
+
+        await tx.userLeaveQuota.update({
+          where: { id: typeQuota.id },
+          data: { usedQuota: typeQuota.usedQuota + group.days },
+        });
+
+        await tx.leaveQuotaHistory.create({
+          data: {
+            userId,
+            leaveRequestId: request.id,
+            previousQuota: remaining,
+            changeAmount: -group.days,
+            newQuota: remaining - group.days,
+            type: QuotaHistoryType.LEAVE_APPROVED,
+            description: `Pengajuan cuti ${STATUS_LABEL[newStatus] ?? newStatus} — ${typeName} (${describeRanges(
+              group.ranges
+            )}): ${group.days} Hari`,
+          },
         });
       }
 
+      // 2. Sinkronkan kuota tahunan generik (LeaveQuota) untuk Cuti Tahunan
+      const annualDays = daysByType
+        .filter((group) => typeNameById.get(group.leaveTypeId) === ANNUAL_LEAVE_NAME)
+        .reduce((sum, group) => sum + group.days, 0);
+
+      if (annualDays > 0) {
+        const currentRemaining = userQuota.totalQuota - userQuota.usedQuota;
+        if (annualDays > currentRemaining) {
+          throw new Error(
+            `Kuota cuti tahunan tidak mencukupi (Sisa: ${currentRemaining} Hari, Pengajuan: ${annualDays} Hari)`
+          );
+        }
+
+        await tx.leaveQuota.update({
+          where: { userId },
+          data: { usedQuota: userQuota.usedQuota + annualDays },
+        });
+
+        await tx.leaveQuotaHistory.create({
+          data: {
+            userId,
+            leaveRequestId: request.id,
+            previousQuota: currentRemaining,
+            changeAmount: -annualDays,
+            newQuota: currentRemaining - annualDays,
+            type: QuotaHistoryType.LEAVE_APPROVED,
+            description: `Pengajuan cuti disetujui / diselesaikan (${ANNUAL_LEAVE_NAME}: ${annualDays} Hari)`,
+          },
+        });
+      }
+    } else if (isRefunding) {
       const historyType =
         newStatus === LeaveStatus.CANCELLED
           ? QuotaHistoryType.LEAVE_CANCELLED
           : QuotaHistoryType.LEAVE_REJECTED_AFTER_APPROVAL;
 
-      const desc =
-        newStatus === LeaveStatus.CANCELLED
-          ? `Pembatalan pengajuan cuti (+${days} Hari)`
-          : `Penolakan pengajuan cuti (+${days} Hari)`;
+      // 1. Kembalikan kuota PER JENIS CUTI
+      for (const group of daysByType) {
+        const typeName = typeNameById.get(group.leaveTypeId) ?? 'Cuti';
+        const typeQuota = await tx.userLeaveQuota.findFirst({
+          where: { userId, leaveTypeId: group.leaveTypeId, year: group.year },
+        });
 
-      await tx.leaveQuotaHistory.create({
-        data: {
-          userId,
-          leaveRequestId: request.id,
-          previousQuota: currentRemaining,
-          changeAmount: days,
-          newQuota: currentRemaining + days,
-          type: historyType,
-          description: desc,
-        },
-      });
+        if (!typeQuota) {
+          continue;
+        }
+
+        const remaining = typeQuota.totalQuota - typeQuota.usedQuota;
+
+        await tx.userLeaveQuota.update({
+          where: { id: typeQuota.id },
+          data: { usedQuota: Math.max(0, typeQuota.usedQuota - group.days) },
+        });
+
+        await tx.leaveQuotaHistory.create({
+          data: {
+            userId,
+            leaveRequestId: request.id,
+            previousQuota: remaining,
+            changeAmount: group.days,
+            newQuota: remaining + group.days,
+            type: historyType,
+            description: `${newStatus === LeaveStatus.CANCELLED ? 'Pembatalan' : 'Penolakan'} pengajuan cuti — ${typeName} (${describeRanges(
+              group.ranges
+            )}): +${group.days} Hari`,
+          },
+        });
+      }
+
+      // 2. Sinkronkan kuota tahunan generik (LeaveQuota) untuk Cuti Tahunan
+      const annualDays = daysByType
+        .filter((group) => typeNameById.get(group.leaveTypeId) === ANNUAL_LEAVE_NAME)
+        .reduce((sum, group) => sum + group.days, 0);
+
+      if (annualDays > 0) {
+        const currentRemaining = userQuota.totalQuota - userQuota.usedQuota;
+
+        await tx.leaveQuota.update({
+          where: { userId },
+          data: { usedQuota: Math.max(0, userQuota.usedQuota - annualDays) },
+        });
+
+        await tx.leaveQuotaHistory.create({
+          data: {
+            userId,
+            leaveRequestId: request.id,
+            previousQuota: currentRemaining,
+            changeAmount: annualDays,
+            newQuota: currentRemaining + annualDays,
+            type: historyType,
+            description: `${newStatus === LeaveStatus.CANCELLED ? 'Pembatalan' : 'Penolakan'} pengajuan cuti (+${annualDays} Hari ${ANNUAL_LEAVE_NAME})`,
+          },
+        });
+      }
     }
 
     // Update Leave Request status
@@ -579,6 +761,7 @@ export async function updateLeaveStatus(
       },
       include: {
         requestTypes: { include: { leaveType: true } },
+        segments: { include: { leaveType: true }, orderBy: { order: 'asc' } },
       },
     });
   });
@@ -588,7 +771,11 @@ export async function deleteLeaveRequest(requestId: string, userId: string, isAd
   return prisma.$transaction(async (tx) => {
     const request = await tx.leaveRequest.findUnique({
       where: { id: requestId },
-      include: { user: { include: { quota: true } } },
+      include: {
+        user: { include: { quota: true } },
+        requestTypes: { include: { leaveType: true } },
+        segments: { include: { leaveType: true }, orderBy: { order: 'asc' } },
+      },
     });
 
     if (!request || request.deletedAt) {
@@ -599,36 +786,78 @@ export async function deleteLeaveRequest(requestId: string, userId: string, isAd
       throw new Error('Anda tidak berhak menghapus pengajuan ini');
     }
 
-    // If deleting an APPROVED or DONE request, refund quota first
+    // Jika pengajuan APPROVED/DONE dihapus, kembalikan kuota PER JENIS CUTI
     if ((request.status === LeaveStatus.APPROVED || request.status === LeaveStatus.DONE) && request.user.quota) {
-      const days = request.totalDays;
-      const currentRemaining = request.user.quota.totalQuota - request.user.quota.usedQuota;
+      const segmentsForQuota =
+        request.segments.length > 0
+          ? request.segments
+          : request.requestTypes.map((rt) => ({
+              leaveTypeId: rt.leaveTypeId,
+              leaveType: rt.leaveType,
+              startDate: request.startDate,
+              endDate: request.endDate,
+              totalDays: request.totalDays,
+            }));
 
-      await tx.leaveQuota.update({
-        where: { userId: request.userId },
-        data: { usedQuota: request.user.quota.usedQuota - days },
-      });
+      const daysByType = groupDaysByTypeAndYear(segmentsForQuota);
+      const typeNameById = new Map<string, string>();
+      segmentsForQuota.forEach((s) => typeNameById.set(s.leaveTypeId, s.leaveType.name));
 
-      const requestYear = request.startDate.getFullYear();
-      const requestTypes = await tx.leaveRequestType.findMany({ where: { leaveRequestId: request.id } });
-      for (const rt of requestTypes) {
-        await tx.userLeaveQuota.updateMany({
-          where: { userId: request.userId, leaveTypeId: rt.leaveTypeId, year: requestYear },
-          data: { usedQuota: { decrement: days } },
+      for (const group of daysByType) {
+        const typeName = typeNameById.get(group.leaveTypeId) ?? 'Cuti';
+        const typeQuota = await tx.userLeaveQuota.findFirst({
+          where: { userId: request.userId, leaveTypeId: group.leaveTypeId, year: group.year },
+        });
+
+        if (!typeQuota) continue;
+
+        const remaining = typeQuota.totalQuota - typeQuota.usedQuota;
+
+        await tx.userLeaveQuota.update({
+          where: { id: typeQuota.id },
+          data: { usedQuota: Math.max(0, typeQuota.usedQuota - group.days) },
+        });
+
+        await tx.leaveQuotaHistory.create({
+          data: {
+            userId: request.userId,
+            leaveRequestId: null, // Histori tetap disimpan walau pengajuan dihapus
+            previousQuota: remaining,
+            changeAmount: group.days,
+            newQuota: remaining + group.days,
+            type: QuotaHistoryType.LEAVE_CANCELLED,
+            description: `Pengembalian kuota karena pengajuan dihapus — ${typeName} (${describeRanges(
+              group.ranges
+            )}): +${group.days} Hari`,
+          },
         });
       }
 
-      await tx.leaveQuotaHistory.create({
-        data: {
-          userId: request.userId,
-          leaveRequestId: null, // Keep history even if request deleted!
-          previousQuota: currentRemaining,
-          changeAmount: days,
-          newQuota: currentRemaining + days,
-          type: QuotaHistoryType.LEAVE_CANCELLED,
-          description: `Pengembalian kuota karena pengajuan cuti disetujui/selesai dihapus (+${days} Hari)`,
-        },
-      });
+      // Kuota tahunan generik hanya untuk Cuti Tahunan
+      const annualDays = daysByType
+        .filter((group) => typeNameById.get(group.leaveTypeId) === ANNUAL_LEAVE_NAME)
+        .reduce((sum, group) => sum + group.days, 0);
+
+      if (annualDays > 0) {
+        const currentRemaining = request.user.quota.totalQuota - request.user.quota.usedQuota;
+
+        await tx.leaveQuota.update({
+          where: { userId: request.userId },
+          data: { usedQuota: Math.max(0, request.user.quota.usedQuota - annualDays) },
+        });
+
+        await tx.leaveQuotaHistory.create({
+          data: {
+            userId: request.userId,
+            leaveRequestId: null,
+            previousQuota: currentRemaining,
+            changeAmount: annualDays,
+            newQuota: currentRemaining + annualDays,
+            type: QuotaHistoryType.LEAVE_CANCELLED,
+            description: `Pengembalian kuota karena pengajuan cuti disetujui/selesai dihapus (+${annualDays} Hari ${ANNUAL_LEAVE_NAME})`,
+          },
+        });
+      }
     }
 
     return tx.leaveRequest.update({

@@ -5,6 +5,7 @@ import {
   updateLeaveRequest,
   deleteLeaveRequest,
 } from '@/services/leave.service';
+import { updateLeaveRequestPayloadSchema } from '@/schemas/leave.schema';
 
 export async function GET(
   request: Request,
@@ -58,11 +59,13 @@ export async function PUT(
     const text = await request.text();
     const body = text && text.trim().length > 0 ? JSON.parse(text) : {};
 
+    const validated = updateLeaveRequestPayloadSchema.parse(body);
+
     const result = await updateLeaveRequest(
       id,
       session.id,
       session.role === 'ADMIN',
-      body
+      validated
     );
 
     return NextResponse.json({
@@ -71,10 +74,16 @@ export async function PUT(
       data: result,
     });
   } catch (error: any) {
-    return NextResponse.json(
-      { success: false, message: error.message || 'Gagal memperbarui pengajuan' },
-      { status: 400 }
-    );
+    const issues = Array.isArray(error?.issues)
+      ? error.issues
+      : Array.isArray(error?.errors)
+        ? error.errors
+        : null;
+    const message =
+      issues && issues.length > 0
+        ? issues.map((issue: { message?: string }) => issue.message).filter(Boolean).join('; ')
+        : error.message || 'Gagal memperbarui pengajuan';
+    return NextResponse.json({ success: false, message, issues: issues ?? undefined }, { status: 400 });
   }
 }
 

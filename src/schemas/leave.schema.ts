@@ -152,6 +152,52 @@ export const updateLeaveStatusSchema = z.object({
 });
 
 /**
+ * Skema PAYLOAD API edit pengajuan (`PUT /api/leave-requests/[id]`).
+ * Semua field opsional; bila `segments` dikirim, aturan segment (endDate >= startDate
+ * dan tidak tumpang tindih) tetap divalidasi.
+ */
+export const updateLeaveRequestPayloadSchema = z
+  .object({
+    segments: z.array(leaveSegmentSchema).optional(),
+    leaveTypeIds: z.array(z.string().uuid('ID Jenis cuti tidak valid')).optional(),
+    startDate: z.string().optional(),
+    endDate: z.string().optional(),
+    reason: z.string().min(3, 'Keterangan minimal 3 karakter').optional(),
+    attachmentUrl: z.string().optional().nullable(),
+    userId: z.string().uuid('ID karyawan tidak valid').optional(),
+  })
+  .superRefine((data, ctx) => {
+    const segments = data.segments ?? [];
+    if (segments.length === 0) return;
+
+    segments.forEach((segment, index) => {
+      if (new Date(segment.endDate) < new Date(segment.startDate)) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['segments', index, 'endDate'],
+          message: `Rentang ke-${index + 1}: tanggal selesai harus setelah atau sama dengan tanggal mulai`,
+        });
+      }
+    });
+
+    for (let i = 0; i < segments.length; i += 1) {
+      for (let j = i + 1; j < segments.length; j += 1) {
+        if (rangesOverlap(segments[i], segments[j])) {
+          ctx.addIssue({
+            code: 'custom',
+            path: ['segments', j, 'startDate'],
+            message: `Rentang ke-${j + 1} (${formatDateId(segments[j].startDate)} - ${formatDateId(
+              segments[j].endDate
+            )}) tumpang tindih dengan rentang ke-${i + 1} (${formatDateId(
+              segments[i].startDate
+            )} - ${formatDateId(segments[i].endDate)})`,
+          });
+        }
+      }
+    }
+  });
+
+/**
  * Skema FORM lama (satu jenis cuti + satu rentang) — dipakai halaman create/edit
  * yang sudah ada. Bentuk & tipenya dipertahankan agar tidak breaking.
  * Untuk mengirim multi-rentang, kirim payload bentuk baru ke API
@@ -181,4 +227,5 @@ export const createLeaveRequestSchema = z
 export type CreateLeaveRequestInput = z.infer<typeof createLeaveRequestSchema>;
 /** Tipe payload API — mendukung `segments[]` maupun bentuk lama. */
 export type CreateLeaveRequestPayload = z.infer<typeof createLeaveRequestPayloadSchema>;
+export type UpdateLeaveRequestPayload = z.infer<typeof updateLeaveRequestPayloadSchema>;
 export type UpdateLeaveStatusInput = z.infer<typeof updateLeaveStatusSchema>;

@@ -56,9 +56,14 @@ export async function POST(request: Request) {
       data: result,
     });
   } catch (error: any) {
-    const message = error.errors && error.errors[0] ? error.errors[0].message : (error.message || 'Gagal mengajukan cuti');
+    // zod v4: daftar issue ada di `error.issues` (bukan `errors`)
+    const issues = Array.isArray(error?.issues) ? error.issues : Array.isArray(error?.errors) ? error.errors : null;
+    const message =
+      issues && issues.length > 0
+        ? issues.map((issue: { message?: string }) => issue.message).filter(Boolean).join('; ')
+        : error.message || 'Gagal mengajukan cuti';
     return NextResponse.json(
-      { success: false, message },
+      { success: false, message, issues: issues ?? undefined },
       { status: 400 }
     );
   }
