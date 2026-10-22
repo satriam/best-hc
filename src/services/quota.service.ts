@@ -22,27 +22,28 @@ export async function ensureUserLeaveQuotas(
   year: number = new Date().getFullYear(),
   db: any = prisma
 ) {
-  const leaveTypes = await db.leaveType.findMany();
-  const existingQuotas = await db.userLeaveQuota.findMany({
-    where: { userId, year },
-  });
+  // Dua query independen → satu wave, bukan dua round-trip berurutan.
+  const [leaveTypes, existingQuotas] = await Promise.all([
+    db.leaveType.findMany(),
+    db.userLeaveQuota.findMany({ where: { userId, year } }),
+  ]);
 
   const existingMap = new Map(existingQuotas.map((q: any) => [q.leaveTypeId, q]));
 
-  for (const lt of leaveTypes) {
-    if (!existingMap.has(lt.id)) {
-      const defaultQuota = lt.defaultDays !== null && lt.defaultDays !== undefined ? lt.defaultDays : 999;
-      await db.userLeaveQuota.create({
-        data: {
-          userId,
-          leaveTypeId: lt.id,
-          year,
-          totalQuota: defaultQuota,
-          usedQuota: 0,
-          borrowedQuota: 0,
-        },
-      });
-    }
+  const missing = (leaveTypes as Array<{ id: string; defaultDays: number | null }>)
+    .filter((lt) => !existingMap.has(lt.id))
+    .map((lt) => ({
+      userId,
+      leaveTypeId: lt.id,
+      year,
+      totalQuota: lt.defaultDays !== null && lt.defaultDays !== undefined ? lt.defaultDays : 999,
+      usedQuota: 0,
+      borrowedQuota: 0,
+    }));
+
+  // Satu INSERT untuk semua jenis cuti yang belum punya baris (bukan N INSERT berurutan).
+  if (missing.length > 0) {
+    await db.userLeaveQuota.createMany({ data: missing });
   }
 }
 
@@ -64,14 +65,38 @@ export async function getUserQuotas(userId: string, year: number = new Date().ge
 }
 
 export async function getAllUserQuotas(year: number = new Date().getFullYear()) {
-  const users = await prisma.user.findMany({
-    where: { deletedAt: null },
-    select: { id: true, name: true, email: true, role: true, gender: true },
-    orderBy: { name: 'asc' },
-  });
+  // Query user, jenis cuti, dan baris kuota tahun ini dijalankan paralel (1 wave).
+  const [users, leaveTypes, existingQuotas] = await Promise.all([
+    prisma.user.findMany({
+      where: { deletedAt: null },
+      select: { id: true, name: true, email: true, role: true, gender: true },
+      orderBy: { name: 'asc' },
+    }),
+    prisma.leaveType.findMany(),
+    prisma.userLeaveQuota.findMany({
+      where: { year, user: { deletedAt: null } },
+      select: { userId: true, leaveTypeId: true },
+    }),
+  ]);
 
-  for (const user of users) {
-    await ensureUserLeaveQuotas(user.id, year);
+  // Pastikan setiap user punya baris kuota untuk semua jenis cuti — satu INSERT massal,
+  // bukan 2 query per user seperti sebelumnya.
+  const existingKeys = new Set(existingQuotas.map((q) => `${q.userId}|${q.leaveTypeId}`));
+  const missing = users.flatMap((user) =>
+    leaveTypes
+      .filter((lt) => !existingKeys.has(`${user.id}|${lt.id}`))
+      .map((lt) => ({
+        userId: user.id,
+        leaveTypeId: lt.id,
+        year,
+        totalQuota: lt.defaultDays !== null && lt.defaultDays !== undefined ? lt.defaultDays : 999,
+        usedQuota: 0,
+        borrowedQuota: 0,
+      }))
+  );
+
+  if (missing.length > 0) {
+    await prisma.userLeaveQuota.createMany({ data: missing });
   }
 
   const userQuotas = await prisma.userLeaveQuota.findMany({
