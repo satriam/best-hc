@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { getSession } from '@/lib/auth';
 import { getUserById, updateUser, deleteUser } from '@/services/user.service';
 import { updateUserSchema } from '@/schemas/user.schema';
+import { normalizeError } from '@/lib/api-error';
 
 export async function GET(
   request: Request,
@@ -46,11 +47,9 @@ export async function PUT(
       message: 'User berhasil diperbarui',
       data: updated,
     });
-  } catch (error: any) {
-    return NextResponse.json(
-      { success: false, message: error.message || 'Gagal memperbarui user' },
-      { status: 400 }
-    );
+  } catch (error: unknown) {
+    const { message, issues } = normalizeError(error, 'Gagal memperbarui user');
+    return NextResponse.json({ success: false, message, issues }, { status: 400 });
   }
 }
 
@@ -71,10 +70,8 @@ export async function DELETE(
       success: true,
       message: 'User berhasil dihapus',
     });
-  } catch (error: any) {
-    return NextResponse.json(
-      { success: false, message: error.message || 'Gagal menghapus user' },
-      { status: 400 }
-    );
+  } catch (error: unknown) {
+    const { message, issues } = normalizeError(error, 'Gagal menghapus user');
+    return NextResponse.json({ success: false, message, issues }, { status: 400 });
   }
 }

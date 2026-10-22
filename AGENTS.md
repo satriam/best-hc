@@ -10,6 +10,22 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 
 # Best HCM — aturan kerja agent
 
+## Branch & deploy (WAJIB)
+
+| Branch | Environment | Database |
+|---|---|---|
+| **`development`** | Preview (Vercel) | `besthcm_dev` |
+| **`master`** | Production (Vercel) | `besthcm_prod` |
+
+- **Kerja SELALU di branch `development`.** Jangan commit/push langsung ke `master` — `master` hanya diisi lewat Pull Request + merge.
+- Sebelum mulai: `git checkout development && git pull --rebase origin development`.
+- Selesai unit kerja: commit → `git push origin development`.
+- Merge ke `master` dilakukan **oleh user/CTO**, bukan worker.
+- Saat merge ke `master`, Vercel menjalankan `prisma migrate deploy` → tabel baru otomatis masuk DB produksi.
+- **Jangan** pakai `prisma db push`. Selalu `prisma migrate dev --name <nama>` dan **commit folder `prisma/migrations/`** bersama `schema.prisma`.
+- Migration yang sudah pernah merge ke `master` **jangan diedit** — buat migration baru.
+- Detail lengkap: `docs/BRANCHING-AND-DEPLOY.md`.
+
 ## Environment terpisah (WAJIB)
 
 | Environment | App port | Container | DB port | Database | Env file |

@@ -15,6 +15,8 @@ import {
   ChevronRight,
   PieChart,
   CalendarDays,
+  Clock,
+  UserCog,
   X,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
@@ -227,6 +229,13 @@ const SidebarContent: React.FC<SidebarContentProps> = ({
               onNavigate={onNavigate}
             />
             <NavItem
+              href="/spkl"
+              icon={<Clock className="w-4 h-4" />}
+              label="SPKL"
+              active={pathname.startsWith('/spkl')}
+              onNavigate={onNavigate}
+            />
+            <NavItem
               href="/profile"
               icon={<User className="w-4 h-4" />}
               label="Profil"
@@ -293,6 +302,19 @@ const SidebarContent: React.FC<SidebarContentProps> = ({
 
             <div className="space-y-1">
               <p className="px-3 text-[11px] font-semibold text-slate-500 uppercase tracking-wider mb-2">
+                Manajemen Lembur
+              </p>
+              <NavItem
+                href="/spkl"
+                icon={<Clock className="w-4 h-4" />}
+                label="SPKL"
+                active={pathname.startsWith('/spkl')}
+                onNavigate={onNavigate}
+              />
+            </div>
+
+            <div className="space-y-1">
+              <p className="px-3 text-[11px] font-semibold text-slate-500 uppercase tracking-wider mb-2">
                 Management
               </p>
               <NavItem
@@ -300,6 +322,13 @@ const SidebarContent: React.FC<SidebarContentProps> = ({
                 icon={<Users className="w-4 h-4" />}
                 label="Users"
                 active={pathname === '/admin/users'}
+                onNavigate={onNavigate}
+              />
+              <NavItem
+                href="/admin/spkl-signers"
+                icon={<UserCog className="w-4 h-4" />}
+                label="Master Penanda Tangan"
+                active={pathname === '/admin/spkl-signers'}
                 onNavigate={onNavigate}
               />
             </div>

@@ -14,6 +14,7 @@ import { ensureUserLeaveQuotas } from '@/services/quota.service';
 const publicUserSelect = {
   id: true,
   nip: true,
+  position: true,
   workUnit: true,
   name: true,
   email: true,
@@ -42,6 +43,7 @@ export async function getAllUsers() {
   return users.map((u) => ({
     id: u.id,
     nip: u.nip || '-',
+    position: u.position || '-',
     workUnit: u.workUnit || '-',
     name: u.name,
     email: u.email,
@@ -65,6 +67,7 @@ export async function getUserById(id: string) {
   return {
     id: user.id,
     nip: user.nip || '-',
+    position: user.position || '-',
     workUnit: user.workUnit || '-',
     name: user.name,
     email: user.email,
@@ -75,6 +78,28 @@ export async function getUserById(id: string) {
     remainingQuota: (user.quota?.totalQuota ?? 12) - (user.quota?.usedQuota ?? 0),
     createdAt: user.createdAt,
   };
+}
+
+/**
+ * Daftar user ringan untuk form SPKL (auto-isi NIK/nama/jabatan).
+ *
+ * SENGAJA hanya mengembalikan kolom yang dibutuhkan form: `id`, `name`, `nip`,
+ * `position`, `workUnit`. Tidak ada `email`, `role`, apalagi `password`.
+ */
+export async function getUserOptions() {
+  const users = await prisma.user.findMany({
+    where: { deletedAt: null },
+    select: { id: true, name: true, nip: true, position: true, workUnit: true },
+    orderBy: { name: 'asc' },
+  });
+
+  return users.map((u) => ({
+    id: u.id,
+    name: u.name,
+    nip: u.nip ?? null,
+    position: u.position ?? null,
+    workUnit: u.workUnit ?? null,
+  }));
 }
 
 export async function createUser(input: CreateUserInput) {
@@ -92,6 +117,7 @@ export async function createUser(input: CreateUserInput) {
     const newUser = await tx.user.create({
       data: {
         nip: input.nip || null,
+        position: input.position?.trim() || null,
         workUnit: input.workUnit || null,
         name: input.name,
         email: input.email,
@@ -140,6 +166,7 @@ export async function updateUser(id: string, input: UpdateUserInput) {
 
   const dataToUpdate: Prisma.UserUpdateInput = {};
   if (input.nip !== undefined) dataToUpdate.nip = input.nip || null;
+  if (input.position !== undefined) dataToUpdate.position = input.position?.trim() || null;
   if (input.workUnit !== undefined) dataToUpdate.workUnit = input.workUnit || null;
   if (input.name) dataToUpdate.name = input.name;
   if (input.email) dataToUpdate.email = input.email;
