@@ -71,7 +71,7 @@ export function buildSpklPrintHtml(spkl: SpklDetail): string {
 </style>
 <div class="spkl-print" style="background:#fff;color:#000;font-family:Arial,Helvetica,sans-serif;padding:0 2px;font-size:9px;line-height:1.3">
   <h1 style="text-align:center;font-weight:bold;font-size:12.5px;text-transform:uppercase;text-decoration:underline;margin:0 0 1px;letter-spacing:0.3px">SURAT PERINTAH KERJA LEMBUR (SPKL)</h1>
-  <p style="text-align:center;font-size:7.5px;margin:0 0 6px;color:#333">Nomor: ${esc(spkl.number)}</p>
+  <p style="text-align:center;font-size:7.5px;margin:0 0 6px;color:#333">&nbsp;</p>
 
   <div class="keep" style="margin-bottom:5px">
     <p style="font-weight:bold;font-size:9px;margin:0 0 2px">Yang bertanda tangan dibawah ini:</p>
