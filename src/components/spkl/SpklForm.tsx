@@ -6,12 +6,22 @@ import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
 import { Input } from '@/components/ui/Input';
 import { Modal } from '@/components/ui/Modal';
-import { computeHours, computeTotal, validatePp35, getDailyLimit } from '@/lib/spkl';
+import {
+  computeHours,
+  computeTotal,
+  validatePp35,
+  getDailyLimit,
+  getTypeLabel,
+  PP35_MAX_HOURS_PER_DAY,
+  PP35_MAX_HOURS_PER_WEEK,
+  PP35_MAX_HOURS_PER_MONTH,
+} from '@/lib/spkl';
 import {
   AlertTriangle,
   ArrowLeft,
   CheckCircle2,
   Copy,
+  Info,
   Loader2,
   Plus,
   Save,
@@ -421,6 +431,26 @@ export function SpklForm({ mode, spklId, initial }: SpklFormProps) {
   // (saat ini hanya Lembur Hari Kerja; jenis lain `null` = tanpa batas).
   const dailyLimit = getDailyLimit(type);
 
+  /**
+   * Ringkasan batas hukum PP 35/2021 per jenis lembur — angka diambil dari
+   * `src/lib/spkl.ts` supaya label UI tidak pernah menyimpang dari validasi.
+   */
+  const pp35Summary = useMemo(
+    () =>
+      SPKL_TYPE_OPTIONS.map((option) => {
+        const limit = PP35_MAX_HOURS_PER_DAY[option.value] ?? null;
+        const parts = [limit === null ? 'tanpa batas harian' : `maks ${limit} jam/hari`];
+        if (option.value === 'WORKDAY') {
+          parts.push(`${PP35_MAX_HOURS_PER_WEEK} jam/minggu`, `${PP35_MAX_HOURS_PER_MONTH} jam/bulan`);
+        }
+        if (option.value === 'PUBLIC_HOLIDAY') {
+          parts.push('tidak dihitung ke batas mingguan/bulanan');
+        }
+        return { value: option.value, label: option.label, text: parts.join(' · ') };
+      }),
+    []
+  );
+
   const dailyViolations = useMemo(
     () =>
       effectiveRows.filter((row) => {
@@ -809,6 +839,35 @@ export function SpklForm({ mode, spklId, initial }: SpklFormProps) {
           </div>
         </fieldset>
 
+        {/* Batasan hukum per jenis lembur (PP 35/2021) */}
+        <div className="rounded-xl border border-amber-200 bg-amber-50 p-3">
+          <p className="flex items-center gap-1.5 text-[11px] font-bold text-amber-900">
+            <Info className="w-3.5 h-3.5 shrink-0" />
+            Batasan hukum lembur (PP 35/2021) — sesuai jenis lembur yang dipilih
+          </p>
+          <ul className="mt-2 space-y-1">
+            {pp35Summary.map((item) => {
+              const active = item.value === type;
+              return (
+                <li
+                  key={item.value}
+                  className={`flex flex-wrap items-baseline gap-x-1.5 text-[11px] leading-snug ${
+                    active ? 'font-semibold text-amber-900' : 'text-amber-800/80'
+                  }`}
+                >
+                  <span className="font-semibold">{item.label}:</span>
+                  <span>{item.text}</span>
+                  {active && (
+                    <span className="rounded-full bg-amber-900 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-white">
+                      dipilih
+                    </span>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           <div>
             <Input
@@ -1045,7 +1104,7 @@ export function SpklForm({ mode, spklId, initial }: SpklFormProps) {
                         }`}
                         title={
                           tooLong
-                            ? `Melebihi batas ${dailyLimit} jam/hari (PP 35/2021)`
+                            ? `Melebihi batas ${dailyLimit} jam/hari untuk ${getTypeLabel(type)} (PP 35/2021)`
                             : 'Dihitung otomatis oleh sistem'
                         }
                       >
@@ -1119,13 +1178,14 @@ export function SpklForm({ mode, spklId, initial }: SpklFormProps) {
           {dailyViolations.length > 0 && (
             <div className="p-4 rounded-xl border bg-rose-50 border-rose-200 text-rose-800 text-xs space-y-1">
               <div className="flex items-center gap-2 font-bold">
-                <AlertTriangle className="w-4 h-4" /> Melebihi batas {dailyLimit} jam/hari (PP 35/2021)
+                <AlertTriangle className="w-4 h-4" /> Melebihi batas {dailyLimit} jam/hari untuk{' '}
+                {getTypeLabel(type)} (PP 35/2021)
               </div>
               <ul className="ml-6 list-disc space-y-0.5 font-medium">
                 {dailyViolations.map((row) => (
                   <li key={row.key}>
                     {row.workerName || row.workerNik || 'Baris'} — {formatHoursLabel(rowHours(row))} (maksimal{' '}
-                    {dailyLimit} jam per hari). Sistem akan menolak SPKL ini.
+                    {dailyLimit} jam per hari untuk {getTypeLabel(type)}). Sistem akan menolak SPKL ini.
                   </li>
                 ))}
               </ul>
