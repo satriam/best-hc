@@ -7,6 +7,26 @@ export interface NormalizedError {
   issues?: { path?: (string | number)[]; message?: string }[];
 }
 
+/**
+ * Error domain yang membawa HTTP status sendiri, supaya route handler bisa
+ * membedakan 400 (input salah bentuk) dari 422 (input valid tapi ditolak aturan bisnis).
+ */
+export class ApiError extends Error {
+  readonly status: number;
+  readonly details?: unknown;
+
+  constructor(message: string, status = 400, details?: unknown) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+    this.details = details;
+  }
+}
+
+export function isApiError(error: unknown): error is ApiError {
+  return error instanceof ApiError;
+}
+
 export function normalizeError(error: unknown, fallback: string): NormalizedError {
   if (error && typeof error === 'object') {
     const candidate = error as {

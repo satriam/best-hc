@@ -24,11 +24,5 @@ export const updateUserSchema = z.object({
   totalQuota: z.number().int().min(0, 'Kuota tidak boleh negatif').optional(),
 });
 
-export const updateQuotaSchema = z.object({
-  totalQuota: z.number().int().min(0, 'Kuota tidak boleh negatif'),
-  leaveTypeId: z.string().optional(),
-});
-
 export type CreateUserInput = z.infer<typeof createUserSchema>;
 export type UpdateUserInput = z.infer<typeof updateUserSchema>;
-export type UpdateQuotaInput = z.infer<typeof updateQuotaSchema>;
