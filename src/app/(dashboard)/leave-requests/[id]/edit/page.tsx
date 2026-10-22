@@ -624,7 +624,7 @@ export default function EditLeaveRequestPage({
 
           <div className="space-y-1">
             <h3 className="text-xl font-black text-rose-950 tracking-tight">
-              Kau lanang cok
+              Cuti Ini Khusus Karyawan Perempuan
             </h3>
             <p className="text-xs text-slate-600 leading-relaxed max-w-sm mx-auto font-semibold pt-1">
               Jenis cuti ini (Cuti Bersalin / Cuti Gugur Kandungan) hanya diperuntukkan bagi karyawan berkategori perempuan.
@@ -637,7 +637,7 @@ export default function EditLeaveRequestPage({
               onClick={() => setShowMaleWarningModal(false)}
               className="bg-rose-600 hover:bg-rose-700 text-white font-bold px-6 py-2.5 rounded-xl shadow-md"
             >
-              Paham, Saya Laki-laki
+              Mengerti
             </Button>
           </div>
         </div>
