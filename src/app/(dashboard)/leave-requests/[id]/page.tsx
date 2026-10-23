@@ -7,6 +7,7 @@ import { Card } from '@/components/ui/Card';
 import { Modal } from '@/components/ui/Modal';
 import { StatusBadge } from '@/components/ui/Badge';
 import { CalendarRangePicker } from '@/components/ui/CalendarRangePicker';
+import { SignedDocumentCard } from '@/components/documents/SignedDocumentCard';
 import { formatDate } from '@/lib/utils';
 import {
   ArrowLeft,
@@ -763,6 +764,13 @@ export default function LeaveRequestDetailPage({
               </table>
             </div>
           </div>
+
+          {/* Dokumen tanda tangan — PDF hasil scan disimpan di Google Drive */}
+          <SignedDocumentCard
+            entityType="LEAVE_REQUEST"
+            entityId={requestDetail.id}
+            isAdmin={currentUserRole === 'ADMIN'}
+          />
 
           {/* Section 3: Detail Jenis Cuti */}
           <div className="w-full space-y-4">
