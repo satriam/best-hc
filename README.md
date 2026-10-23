@@ -79,6 +79,32 @@ cp .env.example .env.production    # lalu isi DATABASE_URL ke besthcm_prod
 |---|---|
 | `DATABASE_URL` | Connection string PostgreSQL (per environment) |
 | `AUTH_SECRET` | NextAuth encryption secret, minimal 32 karakter |
+| `GOOGLE_OAUTH_CLIENT_ID` | OAuth2 client ID (Google Cloud Console → Credentials, tipe "Web application") |
+| `GOOGLE_OAUTH_CLIENT_SECRET` | OAuth2 client secret pasangannya |
+| `GOOGLE_OAUTH_REFRESH_TOKEN` | Refresh token akun **pemilik folder** dengan scope `https://www.googleapis.com/auth/drive` |
+| `GDRIVE_FOLDER_ID` | ID folder Google Drive tujuan arsip PDF tanda tangan (dari URL `.../folders/<ID>`) |
+
+### Google Drive — arsip PDF tanda tangan
+
+Fitur upload PDF bertanda tangan (SPKL & Pengajuan Cuti) menyimpan file ke satu folder
+Google Drive lalu menyimpan link-nya di tabel `signed_documents`. Tidak ada dependency
+tambahan: `POST oauth2.googleapis.com/token` (grant `refresh_token`) → REST Drive API
+(`fetch`). Setelah upload, file otomatis diberi permission *anyone with link (reader)*
+supaya `webViewLink` bisa dibuka tanpa login.
+
+> **Catatan penting:** auth memakai OAuth2 **akun user pemilik folder**, bukan service
+> account. Service account tidak punya storage quota sendiri sehingga upload ke folder
+> My Drive akun personal selalu gagal `403 Service Accounts do not have storage quota`.
+
+Endpoint (lihat `src/app/api/documents/...`):
+
+| Method | Path | Akses |
+|---|---|---|
+| `POST` | `/api/documents/:entityType/:entityId` (multipart `file`, PDF ≤ 10 MB) | ADMIN |
+| `GET` | `/api/documents/:entityType/:entityId` | semua user login |
+| `DELETE` | `/api/documents/:entityType/:entityId/:docId` (soft delete) | ADMIN |
+
+`entityType`: `SPKL` \| `LEAVE_REQUEST`.
 
 *Never commit your actual `.env*` files.*
 

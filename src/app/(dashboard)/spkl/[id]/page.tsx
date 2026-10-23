@@ -7,6 +7,7 @@ import { Card } from '@/components/ui/Card';
 import { Modal } from '@/components/ui/Modal';
 import { SpklStatusBadge } from '@/components/spkl/SpklStatusBadge';
 import { SpklPrintStyles, SpklPrintTemplate } from '@/components/spkl/SpklPrintTemplate';
+import { SignedDocumentCard } from '@/components/documents/SignedDocumentCard';
 import {
   SPKL_TYPE_LABEL,
   formatDateID,
@@ -362,6 +363,9 @@ export default function SpklDetailPage({ params }: { params: Promise<{ id: strin
             </p>
           </Card>
         </div>
+
+        {/* Dokumen tanda tangan — PDF hasil scan disimpan di Google Drive */}
+        <SignedDocumentCard entityType="SPKL" entityId={spkl.id} isAdmin={isAdmin} />
 
         {/* Rincian */}
         <Card className="p-0 overflow-hidden">

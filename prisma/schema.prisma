@@ -70,6 +70,7 @@ model User {
   spklRequests    Spkl[]              @relation("SpklRequester")
   spklSignerLinks SpklSignerUser[]
   spklItems       SpklItem[]
+  signedDocuments SignedDocument[]
 
   @@map("users")
 }
@@ -327,4 +328,37 @@ model SpklItem {
   @@index([spklId])
   @@index([userId])
   @@map("spkl_items")
+}
+
+// ---------------------------------------------------------------------------
+// Dokumen bertanda tangan (PDF) yang diarsipkan ke Google Drive
+// ---------------------------------------------------------------------------
+
+enum SignedDocumentEntityType {
+  SPKL
+  LEAVE_REQUEST
+}
+
+/// Arsip PDF bertanda tangan. File fisiknya ada di Google Drive (satu folder),
+/// baris di sini hanya menyimpan metadata + link supaya dokumen bisa dibuka lagi.
+/// Hanya satu baris `isActive = true` per (entityType, entityId); versi lama
+/// disimpan sebagai riwayat dengan `isActive = false` (file Drive dibiarkan).
+model SignedDocument {
+  id               String                   @id @default(uuid())
+  entityType       SignedDocumentEntityType
+  entityId         String
+  fileName         String
+  driveFileId      String                   @unique
+  driveWebViewLink String
+  mimeType         String                   @default("application/pdf")
+  sizeBytes        Int
+  uploadedById     String
+  isActive         Boolean                  @default(true)
+  createdAt        DateTime                 @default(now())
+  deletedAt        DateTime?
+
+  uploadedBy       User                     @relation(fields: [uploadedById], references: [id], onDelete: Cascade)
+
+  @@index([entityType, entityId, isActive])
+  @@map("signed_documents")
 }

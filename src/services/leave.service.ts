@@ -159,7 +159,36 @@ export interface LeaveFilterOptions {
   month?: number;
   year?: number;
   searchUser?: string;
+  /**
+   * Mode ringkas untuk dashboard: hanya kolom yang dipakai ringkasan
+   * (tanpa `segments`, tanpa `quotaInfo`, jenis cuti hanya id + nama).
+   * Tidak dipakai oleh endpoint API sehingga bentuk respons API tidak berubah.
+   */
+  light?: boolean;
+  /** Batasi jumlah baris (dipakai bersama `light` untuk daftar "terbaru"). */
+  limit?: number;
 }
+
+/** Baris ringkas pengajuan cuti untuk kartu/tabel dashboard. */
+export interface LeaveRequestSummary {
+  id: string;
+  userId: string;
+  startDate: Date;
+  endDate: Date;
+  totalDays: number;
+  status: LeaveStatus;
+  user: { id: string; name: string; email: string };
+  requestTypes: Array<{ id: string; leaveType: { id: string; name: string } }>;
+}
+
+/** Pengajuan cuti lengkap + rincian kuota (bentuk respons endpoint API). */
+export type LeaveRequestWithQuotaInfo = Prisma.LeaveRequestGetPayload<{
+  include: {
+    user: { select: { id: true; name: true; email: true } };
+    requestTypes: { include: { leaveType: true } };
+    segments: { include: { leaveType: true }; orderBy: { order: 'asc' } };
+  };
+}> & { quotaInfo: QuotaInfo };
 
 export async function createLeaveRequest(userId: string, input: CreateLeaveRequestPayload) {
   const user = await prisma.user.findUnique({ where: { id: userId, deletedAt: null } });
@@ -1040,35 +1069,36 @@ export async function attachQuotaInfo<T extends QuotaInfoRequest>(
   const requestIds = requests.map((req) => req.id);
   const userIds = unique(requests.map((req) => req.userId));
 
-  // Query 1: seluruh baris pemotongan kuota untuk pengajuan-pengajuan ini
-  const histories: QuotaHistoryRow[] = await prisma.leaveQuotaHistory.findMany({
-    where: {
-      leaveRequestId: { in: requestIds },
-      type: QuotaHistoryType.LEAVE_APPROVED,
-    },
-    select: {
-      leaveRequestId: true,
-      leaveTypeId: true,
-      previousQuota: true,
-      changeAmount: true,
-      newQuota: true,
-      createdAt: true,
-      leaveType: { select: { id: true, name: true } },
-    },
-    orderBy: { createdAt: 'asc' },
-  });
-
   const yearSet = new Set<number>();
   for (const req of requests) {
     yearSet.add(req.startDate.getFullYear());
     for (const segment of req.segments) yearSet.add(segment.startDate.getFullYear());
   }
 
-  // Query 2: kuota live per jenis cuti untuk user & tahun yang relevan
-  const quotas = await prisma.userLeaveQuota.findMany({
-    where: { userId: { in: userIds }, year: { in: Array.from(yearSet) } },
-    select: { userId: true, leaveTypeId: true, year: true, totalQuota: true, usedQuota: true },
-  });
+  // Query 1 & 2 dijalankan paralel (independen): baris pemotongan kuota untuk
+  // pengajuan-pengajuan ini, dan kuota live per jenis cuti untuk user & tahun relevan.
+  const [histories, quotas] = await Promise.all([
+    prisma.leaveQuotaHistory.findMany({
+      where: {
+        leaveRequestId: { in: requestIds },
+        type: QuotaHistoryType.LEAVE_APPROVED,
+      },
+      select: {
+        leaveRequestId: true,
+        leaveTypeId: true,
+        previousQuota: true,
+        changeAmount: true,
+        newQuota: true,
+        createdAt: true,
+        leaveType: { select: { id: true, name: true } },
+      },
+      orderBy: { createdAt: 'asc' },
+    }),
+    prisma.userLeaveQuota.findMany({
+      where: { userId: { in: userIds }, year: { in: Array.from(yearSet) } },
+      select: { userId: true, leaveTypeId: true, year: true, totalQuota: true, usedQuota: true },
+    }),
+  ]);
 
   const quotaMap = new Map<string, QuotaSnapshotRow>(
     quotas.map((quota) => [`${quota.userId}|${quota.leaveTypeId}|${quota.year}`, quota])
@@ -1175,7 +1205,13 @@ export async function attachQuotaInfo<T extends QuotaInfoRequest>(
   });
 }
 
-export async function getLeaveRequests(options: LeaveFilterOptions = {}) {
+export function getLeaveRequests(
+  options: LeaveFilterOptions & { light: true }
+): Promise<LeaveRequestSummary[]>;
+export function getLeaveRequests(options?: LeaveFilterOptions): Promise<LeaveRequestWithQuotaInfo[]>;
+export async function getLeaveRequests(
+  options: LeaveFilterOptions = {}
+): Promise<LeaveRequestSummary[] | LeaveRequestWithQuotaInfo[]> {
   const whereClause: Prisma.LeaveRequestWhereInput = {
     deletedAt: null,
   };
@@ -1220,6 +1256,62 @@ export async function getLeaveRequests(options: LeaveFilterOptions = {}) {
     whereClause.user = {
       name: { contains: options.searchUser, mode: 'insensitive' },
     };
+  }
+
+  // Mode ringkas (dashboard): 1 query baris + 1 wave query pendukung (user, jenis cuti),
+  // tanpa `segments` dan tanpa perhitungan kuota. Bentuk respons endpoint API tidak berubah
+  // karena endpoint tidak memakai `light`.
+  if (options.light) {
+    const rows = await prisma.leaveRequest.findMany({
+      where: whereClause,
+      select: {
+        id: true,
+        userId: true,
+        startDate: true,
+        endDate: true,
+        totalDays: true,
+        status: true,
+      },
+      orderBy: { createdAt: 'desc' },
+      ...(options.limit && options.limit > 0 ? { take: options.limit } : {}),
+    });
+
+    if (rows.length === 0) return [];
+
+    const [users, requestTypes, leaveTypes] = await Promise.all([
+      prisma.user.findMany({
+        where: { id: { in: unique(rows.map((row) => row.userId)) } },
+        select: { id: true, name: true, email: true },
+      }),
+      prisma.leaveRequestType.findMany({
+        where: { leaveRequestId: { in: rows.map((row) => row.id) } },
+        select: { id: true, leaveRequestId: true, leaveTypeId: true },
+      }),
+      prisma.leaveType.findMany({ select: { id: true, name: true } }),
+    ]);
+
+    const userMap = new Map(users.map((user) => [user.id, user]));
+    const leaveTypeMap = new Map(leaveTypes.map((leaveType) => [leaveType.id, leaveType]));
+    const typesByRequest = new Map<string, LeaveRequestSummary['requestTypes']>();
+
+    for (const requestType of requestTypes) {
+      const leaveType = leaveTypeMap.get(requestType.leaveTypeId);
+      if (!leaveType) continue;
+      const list = typesByRequest.get(requestType.leaveRequestId) ?? [];
+      list.push({ id: requestType.id, leaveType: { id: leaveType.id, name: leaveType.name } });
+      typesByRequest.set(requestType.leaveRequestId, list);
+    }
+
+    return rows.map((row) => ({
+      id: row.id,
+      userId: row.userId,
+      startDate: row.startDate,
+      endDate: row.endDate,
+      totalDays: row.totalDays,
+      status: row.status,
+      user: userMap.get(row.userId) ?? { id: row.userId, name: '', email: '' },
+      requestTypes: typesByRequest.get(row.id) ?? [],
+    }));
   }
 
   const requests = await prisma.leaveRequest.findMany({
@@ -1314,22 +1406,26 @@ export async function getDashboardStats(userId?: string) {
       totalRequests: requests.length,
     };
   } else {
-    // Admin dashboard stats
-    const totalUsers = await prisma.user.count({ where: { deletedAt: null, role: 'USER' } });
-    const totalRequests = await prisma.leaveRequest.count({ where: { deletedAt: null } });
+    // Admin dashboard stats — 2 round-trip DB paralel (bukan 6 sekuensial):
+    // satu agregasi `groupBy` status untuk seluruh pengajuan + satu count user.
+    const [statusGroups, totalUsers] = await Promise.all([
+      prisma.leaveRequest.groupBy({
+        by: ['status'],
+        where: { deletedAt: null },
+        _count: true,
+      }),
+      prisma.user.count({ where: { deletedAt: null, role: 'USER' } }),
+    ]);
 
-    const pendingCount = await prisma.leaveRequest.count({
-      where: { deletedAt: null, status: LeaveStatus.ON_PROGRESS },
-    });
-    const approvedCount = await prisma.leaveRequest.count({
-      where: { deletedAt: null, status: LeaveStatus.APPROVED },
-    });
-    const rejectedCount = await prisma.leaveRequest.count({
-      where: { deletedAt: null, status: LeaveStatus.REJECTED },
-    });
-    const cancelledCount = await prisma.leaveRequest.count({
-      where: { deletedAt: null, status: LeaveStatus.CANCELLED },
-    });
+    const countByStatus = (status: LeaveStatus) =>
+      statusGroups.find((group) => group.status === status)?._count ?? 0;
+
+    const pendingCount = countByStatus(LeaveStatus.ON_PROGRESS);
+    const approvedCount = countByStatus(LeaveStatus.APPROVED);
+    const rejectedCount = countByStatus(LeaveStatus.REJECTED);
+    const cancelledCount = countByStatus(LeaveStatus.CANCELLED);
+    // Total pengajuan = jumlah semua status (setiap baris pasti punya status).
+    const totalRequests = statusGroups.reduce((sum, group) => sum + group._count, 0);
 
     return {
       totalUsers,

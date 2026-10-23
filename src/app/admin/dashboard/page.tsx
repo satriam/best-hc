@@ -11,8 +11,12 @@ export default async function AdminDashboardPage() {
   const session = await getSession();
   if (!session || session.role !== 'ADMIN') return null;
 
-  const stats = await getDashboardStats();
-  const recentRequests = await getLeaveRequests();
+  // Statistik dan daftar pengajuan terbaru tidak saling bergantung → satu wave paralel.
+  // `light` = kolom ringkas tanpa `segments`/`quotaInfo`, hanya 5 baris terbaru.
+  const [stats, recentRequests] = await Promise.all([
+    getDashboardStats(),
+    getLeaveRequests({ light: true, limit: 5 }),
+  ]);
 
   return (
     <div className="space-y-8">

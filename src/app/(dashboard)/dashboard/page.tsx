@@ -12,8 +12,11 @@ export default async function UserDashboardPage() {
   const session = await getSession();
   if (!session) return null;
 
-  const stats = await getDashboardStats(session.id);
-  const requests = await getLeaveRequests({ userId: session.id });
+  // Statistik kuota dan daftar pengajuan tidak saling bergantung → satu wave paralel.
+  const [stats, requests] = await Promise.all([
+    getDashboardStats(session.id),
+    getLeaveRequests({ userId: session.id }),
+  ]);
 
   return (
     <div className="space-y-8">
