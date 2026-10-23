@@ -6,8 +6,10 @@ import { deleteSignedDocument, parseEntityType } from '@/services/signed-documen
 /**
  * DELETE /api/documents/[entityType]/[entityId]/[docId]
  *
- * Soft delete (ADMIN saja): baris ditandai `deletedAt` + `isActive = false`.
- * File di Google Drive sengaja dibiarkan (arsip tidak hilang dari Drive).
+ * Hapus (ADMIN saja): file di Google Drive dihapus lebih dulu, baru baris
+ * ditandai `deletedAt` + `isActive = false`. Kalau Drive gagal, DB tidak
+ * berubah dan API mengembalikan 502. Idempotent: Drive 404 dan DELETE berulang
+ * untuk baris yang sudah terhapus sama-sama dianggap sukses.
  */
 export async function DELETE(
   _request: Request,
@@ -35,7 +37,9 @@ export async function DELETE(
 
     return NextResponse.json({
       success: true,
-      message: 'Dokumen dihapus dari daftar (file di Google Drive tetap disimpan)',
+      message: data.alreadyDeleted
+        ? 'Dokumen sudah dihapus sebelumnya (file Google Drive sudah tidak ada)'
+        : 'Dokumen dan file Google Drive berhasil dihapus',
       data,
     });
   } catch (error: unknown) {

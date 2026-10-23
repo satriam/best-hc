@@ -1,15 +1,15 @@
 import { Prisma, Role, SignedDocumentEntityType } from '@prisma/client';
 import { prisma } from '@/lib/db';
 import { ApiError, isApiError } from '@/lib/api-error';
-import { MAX_PDF_BYTES, uploadPdfToDrive } from '@/services/google-drive.service';
+import { MAX_PDF_BYTES, deleteDriveFile, uploadPdfToDrive } from '@/services/google-drive.service';
 
 /**
  * Arsip PDF bertanda tangan untuk SPKL & Pengajuan Cuti.
  *
  * File fisik disimpan di satu folder Google Drive; tabel `signed_documents`
  * hanya menyimpan metadata + link. Satu entity hanya punya SATU dokumen aktif:
- * upload baru menonaktifkan baris lama (`isActive = false`, tetap tersimpan
- * sebagai riwayat, file Drive lama dibiarkan).
+ * upload baru menonaktifkan baris lama, dan **file Drive lama ikut dihapus**
+ * supaya satu record = satu file (tidak ada file yatim di Drive).
  */
 
 export { MAX_PDF_BYTES };
@@ -39,6 +39,12 @@ export interface UploadSignedDocumentInput {
   actor: SignedDocumentActor;
   bytes: Uint8Array;
   mimeType: string;
+}
+
+export interface UploadSignedDocumentResult {
+  document: SignedDocumentDto;
+  /** Masalah non-fatal (mis. file lama gagal dihapus dari Drive) — data sudah benar. */
+  warnings: string[];
 }
 
 const ENTITY_TYPES: SignedDocumentEntityType[] = ['SPKL', 'LEAVE_REQUEST'];
@@ -143,13 +149,19 @@ async function resolveEntityFileName(
 /**
  * Upload PDF ke Drive lalu simpan metadatanya.
  *
- * Urutan sengaja: Drive dulu, DB belakangan. Kalau DB gagal setelah Drive
- * sukses, error dilaporkan apa adanya (file jadi orphan di Drive, tapi data
- * tidak pernah menunjuk file yang tidak ada).
+ * Urutan (sengaja, jangan dibalik):
+ *   1. Upload file baru ke Drive.
+ *   2. Transaksi DB: dokumen lama entity ini `isActive = false` + `create` baru.
+ *   3. Setelah transaksi sukses, hapus file Drive lama.
+ *
+ * Kalau langkah 3 gagal, request TIDAK digagalkan (data sudah benar) — file
+ * lama dilaporkan lewat `warnings` supaya bisa dibersihkan manual. Urutan ini
+ * dipilih supaya tidak pernah ada file yang hilang dari Drive sementara DB
+ * masih menunjuk ke file tersebut.
  */
 export async function uploadSignedDocument(
   input: UploadSignedDocumentInput
-): Promise<SignedDocumentDto> {
+): Promise<UploadSignedDocumentResult> {
   const { entityType, entityId, actor, bytes, mimeType } = input;
 
   if (actor.role !== 'ADMIN') {
@@ -178,14 +190,23 @@ export async function uploadSignedDocument(
     throw new ApiError('Gagal mengunggah file ke Google Drive', 502);
   }
 
+  let created: SignedDocumentDto;
+  let superseded: { driveFileId: string }[];
+
   try {
-    const created = await prisma.$transaction(async (tx) => {
+    ({ created, superseded } = await prisma.$transaction(async (tx) => {
+      // Dibaca di dalam transaksi supaya file yang dinonaktifkan = file yang dihapus.
+      const previous = await tx.signedDocument.findMany({
+        where: { entityType, entityId, isActive: true },
+        select: { driveFileId: true },
+      });
+
       await tx.signedDocument.updateMany({
         where: { entityType, entityId, isActive: true },
         data: { isActive: false },
       });
 
-      return tx.signedDocument.create({
+      const row = await tx.signedDocument.create({
         data: {
           entityType,
           entityId,
@@ -199,9 +220,9 @@ export async function uploadSignedDocument(
         },
         select: dtoSelect,
       });
-    });
 
-    return created;
+      return { created: row, superseded: previous };
+    }));
   } catch (error) {
     console.error('[signed-document] metadata gagal disimpan setelah upload Drive', {
       entityType,
@@ -215,6 +236,25 @@ export async function uploadSignedDocument(
       500
     );
   }
+
+  // Langkah 3: file Drive lama dibersihkan setelah data baru tersimpan.
+  const warnings: string[] = [];
+  for (const old of superseded) {
+    if (!old.driveFileId || old.driveFileId === created.driveFileId) continue;
+    try {
+      await deleteDriveFile(old.driveFileId);
+    } catch (error) {
+      console.error('[signed-document] file lama gagal dihapus dari Drive', {
+        entityType,
+        entityId,
+        driveFileId: old.driveFileId,
+        message: error instanceof Error ? error.message : 'unknown error',
+      });
+      warnings.push(`file lama gagal dihapus dari Drive: ${old.driveFileId}`);
+    }
+  }
+
+  return { document: created, warnings };
 }
 
 /** Daftar dokumen entity (terbaru dulu), termasuk riwayat non-aktif. */
@@ -232,30 +272,68 @@ export async function listSignedDocuments(
   });
 }
 
-/** Soft delete: baris ditandai `deletedAt` + `isActive = false`, file Drive dibiarkan. */
+export interface DeleteSignedDocumentResult {
+  id: string;
+  driveFileId: string;
+  /** `true` = baris memang sudah dihapus sebelumnya (DELETE diulang, tetap sukses). */
+  alreadyDeleted: boolean;
+}
+
+/**
+ * Hapus dokumen: file Drive dulu, baru DB.
+ *
+ * Urutan ini disengaja. Kalau Drive gagal dihapus, DB TIDAK diubah (row tetap
+ * aktif) sehingga user masih melihat dokumennya dan bisa mencoba lagi — tidak
+ * ada baris yang menunjuk file yang masih ada maupun file yang sudah hilang.
+ *
+ * Idempotent: Drive `404` (file sudah tidak ada) dianggap sukses, dan DELETE
+ * yang diulang untuk baris yang sudah soft-deleted juga mengembalikan sukses.
+ */
 export async function deleteSignedDocument(
   entityType: SignedDocumentEntityType,
   entityId: string,
   docId: string,
   actor: SignedDocumentActor
-): Promise<{ id: string; driveFileId: string }> {
+): Promise<DeleteSignedDocumentResult> {
   if (actor.role !== 'ADMIN') {
     throw new ApiError('Hanya admin yang boleh menghapus dokumen', 403);
   }
 
   const existing = await prisma.signedDocument.findFirst({
-    where: { id: docId, entityType, entityId, deletedAt: null },
-    select: { id: true, driveFileId: true },
+    where: { id: docId, entityType, entityId },
+    select: { id: true, driveFileId: true, deletedAt: true },
   });
 
   if (!existing) {
     throw new ApiError('Dokumen tidak ditemukan', 404);
   }
 
+  if (existing.deletedAt) {
+    return { id: existing.id, driveFileId: existing.driveFileId, alreadyDeleted: true };
+  }
+
+  // Langkah 1: hapus file Drive. Gagal di sini = batalkan semuanya.
+  try {
+    await deleteDriveFile(existing.driveFileId);
+  } catch (error) {
+    console.error('[signed-document] gagal menghapus file Drive, DB tidak diubah', {
+      entityType,
+      entityId,
+      docId: existing.id,
+      driveFileId: existing.driveFileId,
+      message: error instanceof Error ? error.message : 'unknown error',
+    });
+    throw new ApiError(
+      'Gagal menghapus file dari Google Drive, dokumen belum dihapus.',
+      502
+    );
+  }
+
+  // Langkah 2: baru tandai baris terhapus.
   await prisma.signedDocument.update({
     where: { id: existing.id },
     data: { isActive: false, deletedAt: new Date() },
   });
 
-  return { id: existing.id, driveFileId: existing.driveFileId };
+  return { id: existing.id, driveFileId: existing.driveFileId, alreadyDeleted: false };
 }

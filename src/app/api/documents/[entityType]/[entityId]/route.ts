@@ -112,7 +112,7 @@ export async function POST(
 
     const bytes = new Uint8Array(await file.arrayBuffer());
 
-    const data = await uploadSignedDocument({
+    const { document, warnings } = await uploadSignedDocument({
       entityType,
       entityId,
       actor: { id: session.id, role: session.role },
@@ -121,7 +121,7 @@ export async function POST(
     });
 
     return NextResponse.json(
-      { success: true, message: 'Dokumen berhasil diunggah', data },
+      { success: true, message: 'Dokumen berhasil diunggah', data: document, warnings },
       { status: 200 }
     );
   } catch (error: unknown) {

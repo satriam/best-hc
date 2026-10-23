@@ -4,8 +4,8 @@ import { ApiError } from '@/lib/api-error';
 /**
  * Klien tipis Google Drive khusus untuk mengarsipkan PDF bertanda tangan.
  *
- * Kenapa tidak pakai `googleapis`: paket itu besar dan task ini hanya butuh dua
- * panggilan (upload multipart + set permission). Cukup `fetch` bawaan Node.
+ * Kenapa tidak pakai `googleapis`: paket itu besar dan task ini hanya butuh tiga
+ * panggilan (upload multipart, set permission, hapus file). Cukup `fetch` bawaan Node.
  *
  * Kenapa OAuth2 refresh token (bukan service account): service account tidak
  * punya storage quota sendiri, jadi upload ke folder My Drive akun personal
@@ -297,4 +297,56 @@ export async function uploadPdfToDrive(
     sizeBytes: Number.isFinite(sizeBytes) && sizeBytes > 0 ? sizeBytes : bytes.length,
     mimeType: resolvedMimeType,
   };
+}
+
+export interface DriveDeleteResult {
+  /** `true` = file benar-benar dihapus pada panggilan ini. */
+  deleted: boolean;
+  /** `true` = Drive menjawab 404 (file sudah tidak ada) — diperlakukan sukses. */
+  alreadyGone: boolean;
+}
+
+/**
+ * Hapus satu file Drive berdasarkan id.
+ *
+ * `404` bukan error: file memang sudah tidak ada (mis. dihapus manual), jadi
+ * operasi tetap dianggap sukses supaya pemanggil bisa idempotent. Status lain
+ * (401/403/5xx) dilempar sebagai `ApiError` 502 agar pemanggil tahu file masih
+ * ada di Drive dan bisa membatalkan perubahan DB.
+ *
+ * `supportsAllDrives` sengaja tidak dipakai: file berada di My Drive akun user,
+ * bukan shared drive.
+ */
+export async function deleteDriveFile(fileId: string): Promise<DriveDeleteResult> {
+  const id = (fileId ?? '').trim();
+  if (!id) {
+    throw new ApiError('driveFileId kosong, tidak ada file yang bisa dihapus', 500);
+  }
+
+  const accessToken = await getAccessToken();
+  const url = `${apiBaseUrl()}/drive/v3/files/${encodeURIComponent(id)}`;
+
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+  } catch {
+    throw new ApiError('Tidak bisa menghubungi Google Drive untuk menghapus file', 502);
+  }
+
+  // Drive menjawab 204 No Content saat berhasil menghapus.
+  if (response.status === 204 || response.status === 200) {
+    return { deleted: true, alreadyGone: false };
+  }
+  if (response.status === 404) {
+    return { deleted: false, alreadyGone: true };
+  }
+
+  const detail = (await response.text()).slice(0, 200);
+  throw new ApiError(
+    `Hapus file Google Drive gagal (HTTP ${response.status})${detail ? `: ${detail}` : ''}`,
+    502
+  );
 }
