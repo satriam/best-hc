@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
 import { Modal } from '@/components/ui/Modal';
@@ -8,10 +8,8 @@ import { formatDateTime } from '@/lib/utils';
 import {
   AlertTriangle,
   CheckCircle2,
-  ChevronDown,
   ExternalLink,
   FileText,
-  History,
   Loader2,
   RefreshCw,
   Trash2,
@@ -29,8 +27,8 @@ import {
  * - menyediakan fallback "Buka di tab baru" memakai `driveWebViewLink`,
  * - menyediakan upload / ganti / hapus untuk ADMIN.
  *
- * Viewer selalu menampilkan dokumen milik `entityId` halaman ini; dokumen versi
- * lama bisa dipilih dari daftar riwayat (label "Versi lama").
+ * Satu entity hanya punya SATU dokumen: ganti dokumen menghapus dokumen lama
+ * (baris DB + file Drive), jadi tidak ada daftar "versi lama" di kartu ini.
  */
 
 export type SignedDocumentEntityType = 'SPKL' | 'LEAVE_REQUEST';
@@ -85,12 +83,15 @@ export function SignedDocumentCard({
   const [uploading, setUploading] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  /**
+   * Catatan non-fatal dari server saat upload/ganti: dokumen SUDAH tersimpan,
+   * tapi ada langkah sampingan yang gagal (mis. file lama gagal dihapus dari
+   * Drive). Ditampilkan sebagai notice amber, bukan error merah.
+   */
+  const [warnings, setWarnings] = useState<string[]>([]);
   const [pendingDelete, setPendingDelete] = useState<SignedDocumentDto | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
-  const [showHistory, setShowHistory] = useState(false);
-  /** null = tampilkan dokumen aktif; selain itu = versi lama yang dipilih. */
-  const [selectedDocId, setSelectedDocId] = useState<string | null>(null);
   /** URL iframe yang sudah selesai dimuat — dipakai untuk skeleton (tanpa effect). */
   const [loadedPreviewSrc, setLoadedPreviewSrc] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -107,8 +108,6 @@ export function SignedDocumentCard({
       }
       const list = Array.isArray(json.data) ? (json.data as SignedDocumentDto[]) : [];
       setDocuments(list);
-      // Versi lama yang sedang dilihat sudah tidak ada -> kembali ke dokumen aktif.
-      setSelectedDocId((current) => (current && list.some((doc) => doc.id === current) ? current : null));
     } catch (err) {
       setDocuments([]);
       setLoadError(err instanceof Error ? err.message : 'Gagal memuat daftar dokumen');
@@ -127,14 +126,7 @@ export function SignedDocumentCard({
   }, [loadDocuments]);
 
   const activeDocument = documents?.find((doc) => doc.isActive) ?? null;
-  const historyDocuments = useMemo(
-    () => (documents ?? []).filter((doc) => !doc.isActive),
-    [documents]
-  );
-  const selectedDocument =
-    (selectedDocId ? (documents ?? []).find((doc) => doc.id === selectedDocId) : null) ?? activeDocument;
-  const isOldVersion = !!selectedDocument && selectedDocument.id !== activeDocument?.id;
-  const previewSrc = selectedDocument ? drivePreviewUrl(selectedDocument.driveFileId) : null;
+  const previewSrc = activeDocument ? drivePreviewUrl(activeDocument.driveFileId) : null;
   const isLoading = documents === null;
 
   // Skeleton tampil sampai iframe dengan URL ini selesai dimuat (tanpa effect/setState).
@@ -143,6 +135,7 @@ export function SignedDocumentCard({
   const openFilePicker = () => {
     setFormError(null);
     setNotice(null);
+    setWarnings([]);
     fileInputRef.current?.click();
   };
 
@@ -154,6 +147,7 @@ export function SignedDocumentCard({
 
     setNotice(null);
     setFormError(null);
+    setWarnings([]);
 
     // ---- Validasi di client (backend tetap memvalidasi ulang) ----
     if (file.type !== 'application/pdf') {
@@ -179,8 +173,16 @@ export function SignedDocumentCard({
         throw new Error(json.message || 'Gagal mengunggah dokumen');
       }
       setNotice(json.message || 'Dokumen berhasil diunggah.');
-      // Kembali ke dokumen aktif + refetch supaya viewer langsung memuat PDF baru.
-      setSelectedDocId(null);
+      // `warnings` = langkah sampingan yang gagal padahal dokumen sudah tersimpan
+      // (mis. file lama gagal dihapus dari Drive). Kosong = normal.
+      setWarnings(
+        Array.isArray(json.warnings)
+          ? json.warnings.filter(
+              (item: unknown): item is string => typeof item === 'string' && item.trim() !== ''
+            )
+          : []
+      );
+      // Refetch supaya viewer langsung memuat PDF baru.
       await loadDocuments();
     } catch (err) {
       setFormError(err instanceof Error ? err.message : 'Gagal mengunggah dokumen');
@@ -200,10 +202,13 @@ export function SignedDocumentCard({
         throw new Error(json.message || 'Gagal menghapus dokumen');
       }
       setPendingDelete(null);
-      setSelectedDocId(null);
-      setNotice(json.message || 'Dokumen dihapus dari daftar.');
+      // Pesan sukses datang dari server ("Dokumen dan file Google Drive berhasil dihapus permanen").
+      setNotice(json.message || 'Dokumen dan file Google Drive berhasil dihapus.');
+      setWarnings([]);
       await loadDocuments();
     } catch (err) {
+      // 502 dari server = file Drive gagal dihapus, dokumen TETAP ada di daftar.
+      // Daftar sengaja tidak di-refresh supaya tidak tampak "terhapus".
       setDeleteError(err instanceof Error ? err.message : 'Gagal menghapus dokumen');
     } finally {
       setDeleting(false);
@@ -279,7 +284,7 @@ export function SignedDocumentCard({
             <RefreshCw className="w-3.5 h-3.5" /> Coba lagi
           </Button>
         </div>
-      ) : selectedDocument ? (
+      ) : activeDocument ? (
         <div className="space-y-3">
           {/* Info dokumen + fallback buka di tab baru */}
           <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-4">
@@ -290,40 +295,20 @@ export function SignedDocumentCard({
                     className="text-sm font-bold text-slate-900 break-all"
                     data-testid="signed-doc-file-name"
                   >
-                    {selectedDocument.fileName}
+                    {activeDocument.fileName}
                   </p>
-                  {isOldVersion && (
-                    <span
-                      className="rounded-md border border-amber-300 bg-amber-50 px-2 py-0.5 text-[10px] font-extrabold uppercase tracking-wider text-amber-800"
-                      data-testid="signed-doc-old-version-badge"
-                    >
-                      Versi lama
-                    </span>
-                  )}
                 </div>
                 <p className="text-[11px] text-slate-500 mt-1">
-                  {formatFileSize(selectedDocument.sizeBytes)} · diunggah{' '}
-                  {formatDateTime(selectedDocument.createdAt)}
-                  {selectedDocument.uploadedBy?.name
-                    ? ` · oleh ${selectedDocument.uploadedBy.name}`
+                  {formatFileSize(activeDocument.sizeBytes)} · diunggah{' '}
+                  {formatDateTime(activeDocument.createdAt)}
+                  {activeDocument.uploadedBy?.name
+                    ? ` · oleh ${activeDocument.uploadedBy.name}`
                     : ''}
                 </p>
               </div>
               <div className="flex flex-wrap items-center gap-2">
-                {isOldVersion && (
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    onClick={() => setSelectedDocId(null)}
-                    data-testid="signed-doc-back-to-active"
-                    className="font-bold"
-                  >
-                    <RefreshCw className="w-3.5 h-3.5" /> Dokumen terbaru
-                  </Button>
-                )}
                 <a
-                  href={selectedDocument.driveWebViewLink}
+                  href={activeDocument.driveWebViewLink}
                   target="_blank"
                   rel="noopener noreferrer"
                   data-testid="signed-doc-view-link"
@@ -353,12 +338,12 @@ export function SignedDocumentCard({
               <iframe
                 key={previewSrc}
                 src={previewSrc}
-                title={selectedDocument.fileName}
+                title={activeDocument.fileName}
                 loading="lazy"
                 allow="autoplay"
                 onLoad={() => setLoadedPreviewSrc(previewSrc)}
                 data-testid="signed-doc-viewer"
-                data-drive-file-id={selectedDocument.driveFileId}
+                data-drive-file-id={activeDocument.driveFileId}
                 className="w-full h-[600px] min-h-[600px] border-0 bg-white"
               />
             )}
@@ -418,60 +403,28 @@ export function SignedDocumentCard({
             <span>{notice}</span>
           </div>
         )}
-      </div>
-
-      {historyDocuments.length > 0 && (
-        <div className="border-t border-slate-100 pt-3">
-          <button
-            type="button"
-            onClick={() => setShowHistory((open) => !open)}
-            aria-expanded={showHistory}
-            data-testid="signed-doc-history-toggle"
-            className="flex w-full items-center justify-between gap-2 text-left text-[11px] font-bold text-slate-600 hover:text-slate-900"
+        {warnings.length > 0 && (
+          <div
+            role="status"
+            className="p-3 rounded-lg bg-amber-50 border border-amber-300 text-amber-900 text-xs font-medium flex items-start gap-2"
+            data-testid="signed-doc-warnings"
           >
-            <span className="inline-flex items-center gap-1.5">
-              <History className="w-3.5 h-3.5 text-slate-400" /> Riwayat dokumen lama (
-              {historyDocuments.length})
-            </span>
-            <ChevronDown
-              className={`w-3.5 h-3.5 transition-transform ${showHistory ? 'rotate-180' : ''}`}
-            />
-          </button>
-
-          {showHistory && (
-            <ul className="mt-2 space-y-2">
-              {historyDocuments.map((doc) => (
-                <li
-                  key={doc.id}
-                  data-testid="signed-doc-history-item"
-                  className={`flex flex-wrap items-center justify-between gap-2 rounded-lg border px-3 py-2 ${
-                    selectedDocument?.id === doc.id
-                      ? 'border-indigo-300 bg-indigo-50/70'
-                      : 'border-slate-200 bg-white'
-                  }`}
-                >
-                  <div className="min-w-0">
-                    <p className="text-[11px] font-semibold text-slate-700 break-all">
-                      {doc.fileName}
-                    </p>
-                    <p className="text-[10px] text-slate-400">
-                      {formatFileSize(doc.sizeBytes)} · {formatDateTime(doc.createdAt)}
-                    </p>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => setSelectedDocId(doc.id)}
-                    data-testid="signed-doc-history-open"
-                    className="inline-flex items-center gap-1 text-[11px] font-bold text-indigo-700 hover:text-indigo-900 hover:underline"
-                  >
-                    <FileText className="w-3 h-3" /> Lihat versi ini
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-      )}
+            <AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0 text-amber-600" />
+            <div className="min-w-0 space-y-1">
+              <p className="font-bold">
+                Dokumen sudah tersimpan, tetapi ada catatan dari Google Drive:
+              </p>
+              <ul className="list-disc pl-4 space-y-0.5 break-words">
+                {warnings.map((warning, index) => (
+                  <li key={`${index}-${warning}`} data-testid="signed-doc-warning-item">
+                    {warning}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </div>
+        )}
+      </div>
 
       {/* Konfirmasi hapus */}
       <Modal
@@ -482,7 +435,7 @@ export function SignedDocumentCard({
           setDeleteError(null);
         }}
         title="Hapus dokumen tanda tangan?"
-        description="Dokumen dihapus dari daftar aplikasi. File asli di Google Drive tetap disimpan."
+        description="Dokumen dan file PDF-nya di Google Drive akan dihapus permanen. Tindakan ini tidak bisa dibatalkan."
       >
         <div className="space-y-3">
           {deleteError && (
@@ -493,6 +446,12 @@ export function SignedDocumentCard({
           <p className="text-xs text-slate-600 break-all">
             <span className="font-bold">{pendingDelete?.fileName}</span>
           </p>
+          <div className="p-3 rounded-lg bg-amber-50 border border-amber-300 text-amber-900 text-xs font-medium flex items-start gap-2">
+            <AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0 text-amber-600" />
+            <span>
+              File PDF di Google Drive ikut dihapus dan tidak bisa dipulihkan dari aplikasi ini.
+            </span>
+          </div>
           <div className="flex justify-end gap-2">
             <Button
               type="button"
