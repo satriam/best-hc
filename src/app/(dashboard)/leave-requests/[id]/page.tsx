@@ -132,6 +132,8 @@ export default function LeaveRequestDetailPage({
   const [loading, setLoading] = useState(true);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [currentUserRole, setCurrentUserRole] = useState<'USER' | 'ADMIN'>('USER');
+  /** Id user login — dipakai untuk mengecek kepemilikan pengajuan (upload dokumen). */
+  const [currentUserId, setCurrentUserId] = useState<string | null>(null);
 
   // Status Action Modal State
   const [statusModalOpen, setStatusModalOpen] = useState(false);
@@ -220,6 +222,7 @@ export default function LeaveRequestDetailPage({
 
       if (jsonMe.success && jsonMe.data) {
         setCurrentUserRole(jsonMe.data.role);
+        setCurrentUserId(jsonMe.data.id ?? null);
       }
 
       if (jsonHolidays.success && Array.isArray(jsonHolidays.data)) {
@@ -366,6 +369,11 @@ export default function LeaveRequestDetailPage({
 
   const startDateStr = requestDetail.startDate.split('T')[0];
   const endDateStr = requestDetail.endDate.split('T')[0];
+  // Dokumen tanda tangan: ADMIN boleh upload ke pengajuan siapa pun, USER hanya
+  // ke pengajuan miliknya; hapus dokumen tetap ADMIN saja (aturan backend sama).
+  const canUploadSignedDocument =
+    currentUserRole === 'ADMIN' || (!!currentUserId && currentUserId === requestDetail.userId);
+  const canDeleteSignedDocument = currentUserRole === 'ADMIN';
   const leaveType = requestDetail.requestTypes?.[0]?.leaveType;
   const userObj = requestDetail.user;
   const detailSegments = requestDetail.segments ?? [];
@@ -769,7 +777,8 @@ export default function LeaveRequestDetailPage({
           <SignedDocumentCard
             entityType="LEAVE_REQUEST"
             entityId={requestDetail.id}
-            isAdmin={currentUserRole === 'ADMIN'}
+            canUpload={canUploadSignedDocument}
+            canDelete={canDeleteSignedDocument}
           />
 
           {/* Section 3: Detail Jenis Cuti */}

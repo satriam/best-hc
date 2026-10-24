@@ -13,7 +13,11 @@ import {
  *
  * entityType : SPKL | LEAVE_REQUEST
  * GET  — daftar dokumen (semua user yang login, read-only)
- * POST — upload PDF bertanda tangan (ADMIN saja), multipart field `file`
+ * POST — upload PDF bertanda tangan, multipart field `file`
+ *
+ * Otorisasi POST TIDAK di sini: ADMIN boleh untuk entity apa pun, USER hanya
+ * untuk entity miliknya sendiri — semuanya diputuskan `assertCanUpload()` di
+ * service supaya hanya ada satu pintu aturan.
  */
 
 /** Cek objek mirip `File` dari FormData tanpa bergantung pada class global. */
@@ -65,12 +69,6 @@ export async function POST(
   const session = await getSession();
   if (!session) {
     return NextResponse.json({ success: false, message: 'Unauthorized' }, { status: 401 });
-  }
-  if (session.role !== 'ADMIN') {
-    return NextResponse.json(
-      { success: false, message: 'Hanya admin yang boleh mengunggah dokumen' },
-      { status: 403 }
-    );
   }
 
   const { entityType: rawEntityType, entityId } = await params;

@@ -25,7 +25,7 @@ import {
  *   `https://drive.google.com/file/d/<driveFileId>/preview`
  *   (URL `/view` diblokir Google untuk embed, jadi jangan dipakai di iframe),
  * - menyediakan fallback "Buka di tab baru" memakai `driveWebViewLink`,
- * - menyediakan upload / ganti / hapus untuk ADMIN.
+ * - menyediakan upload / ganti untuk pemilik entity & ADMIN, hapus hanya ADMIN.
  *
  * Satu entity hanya punya SATU dokumen: ganti dokumen menghapus dokumen lama
  * (baris DB + file Drive), jadi tidak ada daftar "versi lama" di kartu ini.
@@ -50,8 +50,14 @@ export interface SignedDocumentDto {
 interface SignedDocumentCardProps {
   entityType: SignedDocumentEntityType;
   entityId: string;
-  /** Hanya ADMIN yang boleh upload / ganti / hapus. */
-  isAdmin: boolean;
+  /**
+   * Boleh upload / ganti PDF: ADMIN (entity apa pun) atau pemilik entity.
+   * Backend tetap menegakkan aturan yang sama (`assertCanUpload`) — prop ini
+   * hanya mengatur tampilan tombol.
+   */
+  canUpload: boolean;
+  /** Boleh menghapus dokumen: ADMIN saja. */
+  canDelete: boolean;
   className?: string;
 }
 
@@ -75,7 +81,8 @@ function formatFileSize(bytes: number): string {
 export function SignedDocumentCard({
   entityType,
   entityId,
-  isAdmin,
+  canUpload,
+  canDelete,
   className = '',
 }: SignedDocumentCardProps) {
   const [documents, setDocuments] = useState<SignedDocumentDto[] | null>(null);
@@ -226,38 +233,42 @@ export function SignedDocumentCard({
             PDF bertanda tangan untuk dokumen ini, tersimpan di Google Drive.
           </p>
         </div>
-        {activeDocument && isAdmin && (
+        {activeDocument && (canUpload || canDelete) && (
           <div className="flex flex-wrap items-center gap-2">
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={openFilePicker}
-              disabled={uploading}
-              data-testid="signed-doc-replace-btn"
-              className="font-bold"
-            >
-              {uploading ? (
-                <Loader2 className="w-3.5 h-3.5 animate-spin" />
-              ) : (
-                <Upload className="w-3.5 h-3.5" />
-              )}
-              {uploading ? 'Mengunggah...' : 'Ganti PDF'}
-            </Button>
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={() => {
-                setDeleteError(null);
-                setPendingDelete(activeDocument);
-              }}
-              disabled={uploading || deleting}
-              data-testid="signed-doc-delete-btn"
-              className="font-bold border-rose-300 text-rose-700 bg-rose-50 hover:bg-rose-100"
-            >
-              <Trash2 className="w-3.5 h-3.5" /> Hapus
-            </Button>
+            {canUpload && (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={openFilePicker}
+                disabled={uploading}
+                data-testid="signed-doc-replace-btn"
+                className="font-bold"
+              >
+                {uploading ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <Upload className="w-3.5 h-3.5" />
+                )}
+                {uploading ? 'Mengunggah...' : 'Ganti PDF'}
+              </Button>
+            )}
+            {canDelete && (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  setDeleteError(null);
+                  setPendingDelete(activeDocument);
+                }}
+                disabled={uploading || deleting}
+                data-testid="signed-doc-delete-btn"
+                className="font-bold border-rose-300 text-rose-700 bg-rose-50 hover:bg-rose-100"
+              >
+                <Trash2 className="w-3.5 h-3.5" /> Hapus
+              </Button>
+            )}
           </div>
         )}
       </div>
@@ -355,7 +366,7 @@ export function SignedDocumentCard({
           data-testid="signed-doc-empty"
         >
           <p className="text-xs font-semibold text-slate-500">Belum ada PDF bertanda tangan</p>
-          {isAdmin && (
+          {canUpload && (
             <Button
               type="button"
               size="sm"
