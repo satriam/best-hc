@@ -51,3 +51,24 @@ export const updateCutiSignerSchema = z
   });
 
 export type UpdateCutiSignerInput = z.infer<typeof updateCutiSignerSchema>;
+
+/**
+ * Salin penanda tangan dari master SPKL (`spkl_signers`) ke master cuti.
+ * `role` di sini adalah role TUJUAN pada cuti (KNOWING / APPROVER), bukan role SPKL.
+ */
+export const importCutiSignerFromSpklSchema = z.object({
+  items: z
+    .array(
+      z.object({
+        spklSignerId: z.string().uuid('ID penanda tangan SPKL tidak valid'),
+        role: z.nativeEnum(CutiSignerRole),
+        /** Bila true, penanda tangan ini dijadikan default pada role tujuannya. */
+        isDefault: z.boolean().optional().default(false),
+      })
+    )
+    .min(1, 'Pilih minimal 1 penanda tangan SPKL')
+    .max(50, 'Maksimal 50 penanda tangan sekali salin'),
+});
+
+export type ImportCutiSignerFromSpklInput = z.infer<typeof importCutiSignerFromSpklSchema>;
+

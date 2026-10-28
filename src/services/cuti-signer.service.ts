@@ -1,6 +1,10 @@
 import { prisma } from '@/lib/db';
 import { Prisma, CutiSignerRole } from '@prisma/client';
-import { CutiSignerInput, UpdateCutiSignerInput } from '@/schemas/cuti-signer.schema';
+import {
+  CutiSignerInput,
+  UpdateCutiSignerInput,
+  ImportCutiSignerFromSpklInput,
+} from '@/schemas/cuti-signer.schema';
 
 export interface CutiSignerFilter {
   role?: CutiSignerRole;
@@ -261,4 +265,115 @@ export async function deleteCutiSigner(id: string) {
 
   await prisma.cutiSigner.delete({ where: { id } });
   return { id };
+}
+
+export interface ImportFromSpklResult {
+  copied: { id: string; role: CutiSignerRole; name: string }[];
+  skipped: { name: string; role: CutiSignerRole; reason: string }[];
+}
+
+/**
+ * Salin data master penanda tangan SPKL ke master penanda tangan cuti.
+ *
+ * - Role tujuan ditentukan pemanggil (PIC SPKL biasanya → KNOWING, APPROVER → APPROVER).
+ * - Duplikat dilewati: role tujuan sama DAN (NIP sama, atau nama sama bila NIP kosong).
+ * - Tautan user akun ikut disalin.
+ * - Default: bila role tujuan belum punya default, baris pertama yang disalin otomatis
+ *   jadi default supaya cetak cuti tidak kosong.
+ */
+export async function importCutiSignersFromSpkl(
+  input: ImportCutiSignerFromSpklInput
+): Promise<ImportFromSpklResult> {
+  const targetIds = Array.from(new Set(input.items.map((item) => item.spklSignerId)));
+
+  const spklSigners = await prisma.spklSigner.findMany({
+    where: { id: { in: targetIds } },
+    select: {
+      id: true,
+      role: true,
+      name: true,
+      nip: true,
+      position: true,
+      department: true,
+      workUnit: true,
+      users: { select: { userId: true } },
+    },
+  });
+  const byId = new Map(spklSigners.map((signer) => [signer.id, signer]));
+
+  const result: ImportFromSpklResult = { copied: [], skipped: [] };
+
+  // Status default per role dihitung sekali di awal, lalu diperbarui setiap kali menyalin.
+  const defaultFilled: Record<string, boolean> = {};
+  for (const role of Object.values(CutiSignerRole)) {
+    const count = await prisma.cutiSigner.count({ where: { role, isDefault: true } });
+    defaultFilled[role] = count > 0;
+  }
+
+  for (const item of input.items) {
+    const source = byId.get(item.spklSignerId);
+    if (!source) {
+      result.skipped.push({
+        name: item.spklSignerId,
+        role: item.role,
+        reason: 'Penanda tangan SPKL tidak ditemukan',
+      });
+      continue;
+    }
+
+    const duplicate = await prisma.cutiSigner.findFirst({
+      where: {
+        role: item.role,
+        OR: [
+          ...(source.nip ? [{ nip: source.nip }] : []),
+          { name: source.name },
+        ],
+      },
+      select: { id: true },
+    });
+
+    if (duplicate) {
+      result.skipped.push({
+        name: source.name,
+        role: item.role,
+        reason: 'Sudah ada di master cuti (role + NIP/nama sama)',
+      });
+      continue;
+    }
+
+    const makeDefault = item.isDefault === true || !defaultFilled[item.role];
+    const userIds = Array.from(new Set(source.users.map((link) => link.userId)));
+
+    const created = await prisma.$transaction(async (tx) => {
+      if (makeDefault) {
+        await tx.cutiSigner.updateMany({
+          where: { role: item.role, isDefault: true },
+          data: { isDefault: false },
+        });
+      }
+
+      return tx.cutiSigner.create({
+        data: {
+          role: item.role,
+          name: source.name,
+          nip: source.nip,
+          position: source.position,
+          department: source.department,
+          workUnit: source.workUnit,
+          isActive: true,
+          isDefault: makeDefault,
+          sortOrder: 0,
+          ...(userIds.length > 0
+            ? { users: { create: userIds.map((userId) => ({ userId })) } }
+            : {}),
+        },
+        select: { id: true, role: true, name: true },
+      });
+    });
+
+    if (makeDefault) defaultFilled[item.role] = true;
+    result.copied.push({ id: created.id, role: created.role, name: created.name });
+  }
+
+  return result;
 }

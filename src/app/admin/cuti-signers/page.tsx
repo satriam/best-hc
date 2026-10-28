@@ -14,6 +14,7 @@ import type {
 } from '@/components/cuti-signer/types';
 import {
   AlertTriangle,
+  ArrowRightLeft,
   CheckCircle2,
   Loader2,
   Pencil,
@@ -37,6 +38,21 @@ interface SignerFormState {
   isActive: boolean;
   sortOrder: string;
 }
+
+/** Ringkasan penanda tangan SPKL yang bisa disalin (GET /api/spkl-signers). */
+interface SpklSourceSigner {
+  id: string;
+  role: 'PIC' | 'APPROVER';
+  name: string;
+  nip: string | null;
+  position: string | null;
+  department: string | null;
+  workUnit: string | null;
+}
+
+/** Default pemetaan role SPKL → role cuti: PIC → Mengetahui, Penyetuju → Menyetujui. */
+const mapSpklRole = (role: 'PIC' | 'APPROVER'): CutiSignerRoleValue =>
+  role === 'PIC' ? 'KNOWING' : 'APPROVER';
 
 const EMPTY_FORM: SignerFormState = {
   role: 'KNOWING',
@@ -89,6 +105,16 @@ export default function CutiSignersPage() {
   const [formError, setFormError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [reloadToken, setReloadToken] = useState(0);
+
+  // Salin dari penanda tangan SPKL
+  const [copyOpen, setCopyOpen] = useState(false);
+  const [copyLoading, setCopyLoading] = useState(false);
+  const [copySaving, setCopySaving] = useState(false);
+  const [copyError, setCopyError] = useState<string | null>(null);
+  const [spklSources, setSpklSources] = useState<SpklSourceSigner[]>([]);
+  const [copySelection, setCopySelection] = useState<
+    Record<string, { selected: boolean; role: CutiSignerRoleValue }>
+  >({});
 
   useEffect(() => {
     let active = true;
@@ -276,6 +302,102 @@ export default function CutiSignersPage() {
     }
   };
 
+  /** Buka modal salin: muat penanda tangan SPKL aktif lalu isi pilihan awal. */
+  const openCopyFromSpkl = async () => {
+    setCopyOpen(true);
+    setCopyLoading(true);
+    setCopyError(null);
+    setSpklSources([]);
+    setCopySelection({});
+    try {
+      const response = await fetch('/api/spkl-signers?active=1');
+      const json = await response.json();
+      if (!response.ok || !json.success) {
+        throw new Error(apiErrorMessage(json, 'Gagal memuat penanda tangan SPKL'));
+      }
+      const list: SpklSourceSigner[] = Array.isArray(json.data)
+        ? (json.data as SpklSourceSigner[])
+        : [];
+      setSpklSources(list);
+      setCopySelection(
+        Object.fromEntries(
+          list.map((signer) => [
+            signer.id,
+            { selected: false, role: mapSpklRole(signer.role) },
+          ])
+        )
+      );
+    } catch (err) {
+      setCopyError(err instanceof Error ? err.message : 'Gagal memuat penanda tangan SPKL');
+    } finally {
+      setCopyLoading(false);
+    }
+  };
+
+  const copySelectedCount = Object.values(copySelection).filter((row) => row.selected).length;
+
+  const toggleCopyRow = (id: string) =>
+    setCopySelection((current) => ({
+      ...current,
+      [id]: { ...current[id], selected: !current[id]?.selected, role: current[id]?.role ?? 'KNOWING' },
+    }));
+
+  const setCopyRowRole = (id: string, role: CutiSignerRoleValue) =>
+    setCopySelection((current) => ({
+      ...current,
+      [id]: { ...current[id], role },
+    }));
+
+  const toggleCopyAll = () => {
+    const allSelected = spklSources.every((signer) => copySelection[signer.id]?.selected);
+    setCopySelection((current) =>
+      Object.fromEntries(
+        Object.entries(current).map(([id, row]) => [id, { ...row, selected: !allSelected }])
+      )
+    );
+  };
+
+  const submitCopyFromSpkl = async () => {
+    const items = Object.entries(copySelection)
+      .filter(([, row]) => row.selected)
+      .map(([spklSignerId, row]) => ({ spklSignerId, role: row.role }));
+
+    if (items.length === 0) {
+      setCopyError('Pilih minimal satu penanda tangan SPKL.');
+      return;
+    }
+
+    setCopySaving(true);
+    setCopyError(null);
+    try {
+      const response = await fetch('/api/cuti-signers/import-spkl', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ items }),
+      });
+      const json = await response.json();
+      if (!response.ok || !json.success) {
+        throw new Error(apiErrorMessage(json, 'Gagal menyalin penanda tangan dari SPKL'));
+      }
+
+      const skipped: Array<{ name: string; reason: string }> = json.data?.skipped ?? [];
+      setActionMsg({
+        type: 'success',
+        text:
+          (json.message || 'Penanda tangan disalin.') +
+          (skipped.length > 0
+            ? ` Dilewati: ${skipped.map((row) => `${row.name} (${row.reason})`).join('; ')}.`
+            : ''),
+      });
+      setCopyOpen(false);
+      setReloadToken((token) => token + 1);
+    } catch (err) {
+      setCopyError(err instanceof Error ? err.message : 'Gagal menyalin penanda tangan dari SPKL');
+    } finally {
+      setCopySaving(false);
+    }
+  };
+
   return (
     <div className="space-y-6">
       {/* Header */}
@@ -296,6 +418,9 @@ export default function CutiSignersPage() {
         <div className="flex items-center gap-2">
           <Button variant="outline" size="sm" onClick={reload} disabled={loading}>
             <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} /> Muat ulang
+          </Button>
+          <Button variant="outline" size="sm" onClick={openCopyFromSpkl} disabled={loading}>
+            <ArrowRightLeft className="w-3.5 h-3.5" /> Salin dari SPKL
           </Button>
           <Button size="md" onClick={openCreate} className="font-bold">
             <Plus className="w-4 h-4" /> Tambah {tab === 'KNOWING' ? 'Mengetahui' : 'Menyetujui'}
@@ -650,6 +775,122 @@ export default function CutiSignersPage() {
             <Button type="button" onClick={save} disabled={saving}>
               {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle2 className="w-4 h-4" />}
               Simpan
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* Modal salin dari master SPKL */}
+      <Modal
+        isOpen={copyOpen}
+        onClose={() => setCopyOpen(false)}
+        title="Salin dari Penanda Tangan SPKL"
+        description="Ambil data PIC / Penyetuju SPKL lalu simpan sebagai penanda tangan cuti. Tautan user ikut tersalin."
+        maxWidth="xl"
+      >
+        <div className="space-y-3">
+          {copyError && (
+            <div className="p-3 rounded-lg bg-rose-50 border border-rose-200 text-rose-800 text-xs font-medium">
+              {copyError}
+            </div>
+          )}
+
+          {copyLoading ? (
+            <div className="py-8 text-center text-xs text-slate-500">
+              <span className="inline-flex items-center gap-2">
+                <Loader2 className="w-4 h-4 animate-spin" /> Memuat penanda tangan SPKL...
+              </span>
+            </div>
+          ) : spklSources.length === 0 ? (
+            <div className="py-8 text-center text-xs text-slate-500">
+              Belum ada penanda tangan SPKL aktif untuk disalin.
+            </div>
+          ) : (
+            <>
+              <div className="flex items-center justify-between">
+                <button
+                  type="button"
+                  onClick={toggleCopyAll}
+                  className="text-[11px] font-bold text-indigo-700 hover:text-indigo-900"
+                >
+                  {spklSources.every((signer) => copySelection[signer.id]?.selected)
+                    ? 'Batal pilih semua'
+                    : 'Pilih semua'}
+                </button>
+                <span className="text-[11px] text-slate-500">{copySelectedCount} dipilih</span>
+              </div>
+
+              <div className="max-h-[60vh] overflow-y-auto rounded-lg border border-slate-200 divide-y divide-slate-100">
+                {spklSources.map((signer) => {
+                  const row = copySelection[signer.id] ?? { selected: false, role: mapSpklRole(signer.role) };
+                  return (
+                    <div
+                      key={signer.id}
+                      className={`flex items-center gap-3 p-3 ${row.selected ? 'bg-indigo-50/50' : 'bg-white'}`}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={row.selected}
+                        onChange={() => toggleCopyRow(signer.id)}
+                        className="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                        aria-label={`Pilih ${signer.name}`}
+                      />
+                      <div className="min-w-0 flex-1">
+                        <p className="text-xs font-bold text-slate-900 truncate">{signer.name}</p>
+                        <p className="text-[10px] text-slate-500 truncate">
+                          {signer.nip ? `NIP ${signer.nip} · ` : ''}
+                          {signer.position || 'Jabatan belum diisi'}
+                        </p>
+                      </div>
+                      <span
+                        className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-bold border ${
+                          signer.role === 'PIC'
+                            ? 'bg-amber-50 text-amber-700 border-amber-200'
+                            : 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                        }`}
+                      >
+                        SPKL: {signer.role === 'PIC' ? 'PIC' : 'Penyetuju'}
+                      </span>
+                      <select
+                        value={row.role}
+                        onChange={(event) =>
+                          setCopyRowRole(signer.id, event.target.value as CutiSignerRoleValue)
+                        }
+                        disabled={!row.selected}
+                        aria-label={`Role cuti untuk ${signer.name}`}
+                        className="h-8 shrink-0 rounded-lg border border-slate-300 bg-white px-2 text-[11px] text-slate-900 disabled:opacity-50"
+                      >
+                        <option value="KNOWING">Mengetahui</option>
+                        <option value="APPROVER">Menyetujui</option>
+                      </select>
+                    </div>
+                  );
+                })}
+              </div>
+
+              <p className="text-[10px] text-slate-500">
+                Role tujuan bisa diubah per baris (default: PIC → Mengetahui, Penyetuju → Menyetujui).
+                Data yang sudah ada di master cuti dengan role + NIP/nama sama akan dilewati. Bila role
+                tujuan belum punya default, baris pertama yang disalin otomatis jadi default.
+              </p>
+            </>
+          )}
+
+          <div className="flex justify-end gap-2 pt-2 border-t border-slate-100">
+            <Button type="button" variant="outline" onClick={() => setCopyOpen(false)}>
+              Batal
+            </Button>
+            <Button
+              type="button"
+              onClick={submitCopyFromSpkl}
+              disabled={copySaving || copyLoading || copySelectedCount === 0}
+            >
+              {copySaving ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <ArrowRightLeft className="w-4 h-4" />
+              )}
+              Salin {copySelectedCount > 0 ? `${copySelectedCount} data` : ''}
             </Button>
           </div>
         </div>
