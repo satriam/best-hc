@@ -183,6 +183,10 @@ export default function SpklDetailPage({ params }: { params: Promise<{ id: strin
     (spkl.status === 'DRAFT' || spkl.status === 'ON_PROGRESS' || spkl.status === 'REJECTED') &&
     (isOwner || isAdmin);
   const workerCount = new Set(spkl.items.map((item) => item.workerNik)).size;
+  // Dokumen tanda tangan: ADMIN boleh upload ke SPKL siapa pun, USER hanya ke SPKL
+  // miliknya; hapus dokumen tetap ADMIN saja (aturan backend `assertCanUpload`).
+  const canUploadSignedDocument = isAdmin || isOwner;
+  const canDeleteSignedDocument = isAdmin;
 
   return (
     <React.Fragment>
@@ -365,7 +369,12 @@ export default function SpklDetailPage({ params }: { params: Promise<{ id: strin
         </div>
 
         {/* Dokumen tanda tangan — PDF hasil scan disimpan di Google Drive */}
-        <SignedDocumentCard entityType="SPKL" entityId={spkl.id} isAdmin={isAdmin} />
+        <SignedDocumentCard
+          entityType="SPKL"
+          entityId={spkl.id}
+          canUpload={canUploadSignedDocument}
+          canDelete={canDeleteSignedDocument}
+        />
 
         {/* Rincian */}
         <Card className="p-0 overflow-hidden">

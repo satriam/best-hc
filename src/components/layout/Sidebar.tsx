@@ -17,6 +17,7 @@ import {
   CalendarDays,
   Clock,
   UserCog,
+  FileSignature,
   X,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
@@ -327,8 +328,15 @@ const SidebarContent: React.FC<SidebarContentProps> = ({
               <NavItem
                 href="/admin/spkl-signers"
                 icon={<UserCog className="w-4 h-4" />}
-                label="Master Penanda Tangan"
+                label="Penanda Tangan SPKL"
                 active={pathname === '/admin/spkl-signers'}
+                onNavigate={onNavigate}
+              />
+              <NavItem
+                href="/admin/cuti-signers"
+                icon={<FileSignature className="w-4 h-4" />}
+                label="Penanda Tangan Cuti"
+                active={pathname === '/admin/cuti-signers'}
                 onNavigate={onNavigate}
               />
             </div>

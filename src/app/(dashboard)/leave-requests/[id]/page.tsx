@@ -132,6 +132,23 @@ export default function LeaveRequestDetailPage({
   const [loading, setLoading] = useState(true);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [currentUserRole, setCurrentUserRole] = useState<'USER' | 'ADMIN'>('USER');
+  /** Id user login — dipakai untuk mengecek kepemilikan pengajuan (upload dokumen). */
+  const [currentUserId, setCurrentUserId] = useState<string | null>(null);
+
+  /**
+   * Master penanda tangan cuti (GET /api/cuti-signers?active=1).
+   * Dipakai pada blok tanda tangan Mengetahui & Menyetujui di template cetak.
+   */
+  const [cutiSigners, setCutiSigners] = useState<
+    Array<{
+      role: 'KNOWING' | 'APPROVER';
+      name: string;
+      nip: string | null;
+      position: string | null;
+      isDefault: boolean;
+      sortOrder: number;
+    }>
+  >([]);
 
   // Status Action Modal State
   const [statusModalOpen, setStatusModalOpen] = useState(false);
@@ -163,17 +180,19 @@ export default function LeaveRequestDetailPage({
     setLoading(true);
     setErrorMsg(null);
     try {
-      const [resReq, resMe, resHolidays, resRequests] = await Promise.all([
+      const [resReq, resMe, resHolidays, resRequests, resSigners] = await Promise.all([
         fetch(`/api/leave-requests/${requestId}`),
         fetch('/api/auth/me'),
         fetch('/api/holidays'),
         fetch('/api/leave-requests'),
+        fetch('/api/cuti-signers?active=1'),
       ]);
 
       const jsonReq = await safeParseJson(resReq);
       const jsonMe = await safeParseJson(resMe);
       const jsonHolidays = await safeParseJson(resHolidays);
       const jsonRequests = await safeParseJson(resRequests);
+      const jsonSigners = await safeParseJson(resSigners);
 
       if (!resReq.ok || !jsonReq.success || !jsonReq.data) {
         throw new Error(jsonReq.message || 'Pengajuan cuti tidak ditemukan');
@@ -220,6 +239,32 @@ export default function LeaveRequestDetailPage({
 
       if (jsonMe.success && jsonMe.data) {
         setCurrentUserRole(jsonMe.data.role);
+        setCurrentUserId(jsonMe.data.id ?? null);
+      }
+
+      if (jsonSigners.success && Array.isArray(jsonSigners.data)) {
+        setCutiSigners(
+          jsonSigners.data
+            .filter(
+              (signer: { role?: string }) =>
+                signer.role === 'KNOWING' || signer.role === 'APPROVER'
+            )
+            .map((signer: {
+              role: 'KNOWING' | 'APPROVER';
+              name: string;
+              nip?: string | null;
+              position?: string | null;
+              isDefault?: boolean;
+              sortOrder?: number;
+            }) => ({
+              role: signer.role,
+              name: signer.name,
+              nip: signer.nip ?? null,
+              position: signer.position ?? null,
+              isDefault: signer.isDefault ?? false,
+              sortOrder: signer.sortOrder ?? 0,
+            }))
+        );
       }
 
       if (jsonHolidays.success && Array.isArray(jsonHolidays.data)) {
@@ -366,6 +411,11 @@ export default function LeaveRequestDetailPage({
 
   const startDateStr = requestDetail.startDate.split('T')[0];
   const endDateStr = requestDetail.endDate.split('T')[0];
+  // Dokumen tanda tangan: ADMIN boleh upload ke pengajuan siapa pun, USER hanya
+  // ke pengajuan miliknya; hapus dokumen tetap ADMIN saja (aturan backend sama).
+  const canUploadSignedDocument =
+    currentUserRole === 'ADMIN' || (!!currentUserId && currentUserId === requestDetail.userId);
+  const canDeleteSignedDocument = currentUserRole === 'ADMIN';
   const leaveType = requestDetail.requestTypes?.[0]?.leaveType;
   const userObj = requestDetail.user;
   const detailSegments = requestDetail.segments ?? [];
@@ -769,7 +819,8 @@ export default function LeaveRequestDetailPage({
           <SignedDocumentCard
             entityType="LEAVE_REQUEST"
             entityId={requestDetail.id}
-            isAdmin={currentUserRole === 'ADMIN'}
+            canUpload={canUploadSignedDocument}
+            canDelete={canDeleteSignedDocument}
           />
 
           {/* Section 3: Detail Jenis Cuti */}
@@ -1117,6 +1168,32 @@ export default function LeaveRequestDetailPage({
           const unit = userObj.workUnit || 'Joint Development Digitalisasi Aplikasi HCO';
           const esc = (s: string) => (s || '').replace(/[&<>"']/g, m => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[m] as string));
 
+          // ---- Blok tanda tangan: ambil dari Master Penanda Tangan Cuti ----
+          // Default per role menang; kalau belum ada default, pakai baris aktif pertama.
+          const pickSigner = (role: 'KNOWING' | 'APPROVER') =>
+            cutiSigners.find((s) => s.role === role && s.isDefault) ??
+            cutiSigners.find((s) => s.role === role) ??
+            null;
+          const knowingSigner = pickSigner('KNOWING');
+          const approverSigner = pickSigner('APPROVER');
+          /** Jabatan multi-baris tetap terpisah seperti template lama (fallback boleh berisi <br>). */
+          const signerPositionHtml = (value: string | null | undefined, fallback: string) => {
+            const raw = (value || fallback).replace(/<br\s*\/?>/gi, '\n');
+            return esc(raw).replace(/\n/g, '<br>');
+          };
+          const approverPositionHtml = signerPositionHtml(
+            approverSigner?.position,
+            'Manajer Pengembangan Bisnis<br>& Operational Excellence'
+          );
+          const knowingPositionHtml = signerPositionHtml(
+            knowingSigner?.position,
+            'Application Development & Services/EIS<br>Department Head'
+          );
+          const approverName = esc(approverSigner?.name || 'Dedy Supriyatmoko');
+          const approverNip = esc(approverSigner?.nip || '1082100018');
+          const knowingName = esc(knowingSigner?.name || 'Dedek Apriyani');
+          const knowingNip = esc(knowingSigner?.nip || '8913230864');
+
           // ---- Semua jenis cuti & rentang tanggal yang dipakai pengajuan ini ----
           // Sumber utama: segments[] (multi-rentang). Pengajuan lama tanpa segments memakai rentang tunggal.
           const usedTypesMap = new Map<
@@ -1358,17 +1435,17 @@ export default function LeaveRequestDetailPage({
   <div style="margin-top:30px;display:flex;justify-content:space-between;text-align:center;font-size:11px">
     <div style="width:30%">
       <p style="font-weight:bold;height:16px">Menyetujui,</p>
-      <p style="font-size:10px;line-height:1.2;margin-top:3px;height:26px">Manajer Pengembangan Bisnis<br>&amp; Operational Excellence</p>
+      <p style="font-size:10px;line-height:1.2;margin-top:3px;height:26px">${approverPositionHtml}</p>
       <div style="height:58px"></div>
-      <p style="font-weight:bold;text-decoration:underline">Dedy Supriyatmoko</p>
-      <p style="font-size:10px;margin-top:1px">NP.1082100018</p>
+      <p style="font-weight:bold;text-decoration:underline">${approverName}</p>
+      <p style="font-size:10px;margin-top:1px">NP. ${approverNip}</p>
     </div>
     <div style="width:30%">
       <p style="font-weight:bold;height:16px">Mengetahui,</p>
-      <p style="font-size:10px;line-height:1.2;margin-top:3px;height:26px">Application Development &amp; Services/EIS<br>Department Head</p>
+      <p style="font-size:10px;line-height:1.2;margin-top:3px;height:26px">${knowingPositionHtml}</p>
       <div style="height:58px"></div>
-      <p style="font-weight:bold;text-decoration:underline">Dedek Apriyani</p>
-      <p style="font-size:10px;margin-top:1px">NP. 8913230864</p>
+      <p style="font-weight:bold;text-decoration:underline">${knowingName}</p>
+      <p style="font-size:10px;margin-top:1px">NP. ${knowingNip}</p>
     </div>
     <div style="width:30%">
       <p style="font-weight:bold;height:16px">Pemohon,</p>

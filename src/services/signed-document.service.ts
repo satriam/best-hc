@@ -124,26 +124,62 @@ const dtoSelect = {
   createdAt: true,
 } satisfies Prisma.SignedDocumentSelect;
 
-/** Pastikan entity tujuan ada dan belum dihapus; sekaligus ambil data untuk nama file. */
-async function resolveEntityFileName(
+export interface EntityUploadContext {
+  /** Pemilik entity: `Spkl.requesterId` atau `LeaveRequest.userId`. */
+  ownerId: string;
+  /** Nama file Drive yang dipakai saat upload — dari query entity yang sama. */
+  fileName: string;
+}
+
+/**
+ * Ambil entity tujuan upload (404 kalau tidak ada atau sudah dihapus) sekaligus
+ * data untuk nama file. Query ini juga sumber `ownerId` untuk cek kepemilikan,
+ * jadi otorisasi tidak menambah round-trip ke DB.
+ */
+async function loadUploadTarget(
   entityType: SignedDocumentEntityType,
   entityId: string
-): Promise<string> {
+): Promise<EntityUploadContext> {
   if (entityType === 'SPKL') {
     const spkl = await prisma.spkl.findFirst({
       where: { id: entityId, deletedAt: null },
-      select: { id: true, number: true },
+      select: { id: true, number: true, requesterId: true },
     });
     if (!spkl) throw new ApiError('SPKL tidak ditemukan', 404);
-    return buildSpklFileName(spkl.number);
+    return { ownerId: spkl.requesterId, fileName: buildSpklFileName(spkl.number) };
   }
 
   const leaveRequest = await prisma.leaveRequest.findFirst({
     where: { id: entityId, deletedAt: null },
-    select: { id: true, startDate: true, user: { select: { name: true } } },
+    select: { id: true, startDate: true, userId: true, user: { select: { name: true } } },
   });
   if (!leaveRequest) throw new ApiError('Pengajuan cuti tidak ditemukan', 404);
-  return buildLeaveFileName(leaveRequest.user?.name ?? '', leaveRequest.startDate);
+  return {
+    ownerId: leaveRequest.userId,
+    fileName: buildLeaveFileName(leaveRequest.user?.name ?? '', leaveRequest.startDate),
+  };
+}
+
+/**
+ * Satu-satunya pintu otorisasi upload dokumen.
+ *
+ * - ADMIN  → boleh untuk entity apa pun.
+ * - USER   → hanya untuk entity miliknya sendiri (`ownerId === actor.id`).
+ * - selain itu → 403.
+ *
+ * Entity yang sudah dihapus (`deletedAt` terisi) selalu 404, termasuk untuk ADMIN.
+ */
+export async function assertCanUpload(
+  entityType: SignedDocumentEntityType,
+  entityId: string,
+  actor: SignedDocumentActor
+): Promise<EntityUploadContext> {
+  const target = await loadUploadTarget(entityType, entityId);
+
+  if (actor.role === 'ADMIN') return target;
+  if (target.ownerId === actor.id) return target;
+
+  throw new ApiError('Anda hanya dapat mengunggah dokumen untuk pengajuan milik Anda.', 403);
 }
 
 /**
@@ -165,9 +201,10 @@ export async function uploadSignedDocument(
 ): Promise<UploadSignedDocumentResult> {
   const { entityType, entityId, actor, bytes, mimeType } = input;
 
-  if (actor.role !== 'ADMIN') {
-    throw new ApiError('Hanya admin yang boleh mengunggah dokumen', 403);
-  }
+  // Otorisasi dulu (ADMIN untuk entity apa pun, USER hanya miliknya sendiri),
+  // sekaligus mengambil entity + nama file Drive → tidak ada round-trip tambahan.
+  const { fileName } = await assertCanUpload(entityType, entityId, actor);
+
   if (bytes.length === 0) {
     throw new ApiError('File kosong', 400);
   }
@@ -180,8 +217,6 @@ export async function uploadSignedDocument(
   if (!isPdfMagicBytes(bytes)) {
     throw new ApiError('File bukan PDF (isi file tidak diawali %PDF-)', 400);
   }
-
-  const fileName = await resolveEntityFileName(entityType, entityId);
 
   let uploaded;
   try {
