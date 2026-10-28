@@ -71,6 +71,7 @@ model User {
   spklSignerLinks SpklSignerUser[]
   spklItems       SpklItem[]
   signedDocuments SignedDocument[]
+  cutiSignerLinks CutiSignerUser[]
 
   @@map("users")
 }
@@ -274,6 +275,52 @@ model SpklSignerUser {
   @@unique([signerId, userId])
   @@index([userId])
   @@map("spkl_signer_users")
+}
+
+// ---------------------------------------------------------------------------
+// Master penanda tangan Cuti (blok tanda tangan pada cetak permohonan cuti)
+// ---------------------------------------------------------------------------
+
+enum CutiSignerRole {
+  KNOWING // Mengetahui
+  APPROVER // Menyetujui
+}
+
+/// Master penanda tangan cetak permohonan cuti. Role `KNOWING` = Mengetahui,
+/// `APPROVER` = Menyetujui. Satu penanda tangan boleh terhubung ke banyak user
+/// akun (`CutiSignerUser`), tetapi boleh juga tanpa akun sama sekali.
+model CutiSigner {
+  id         String          @id @default(uuid())
+  role       CutiSignerRole
+  name       String
+  nip        String?
+  position   String?
+  department String?
+  workUnit   String?
+  isActive   Boolean         @default(true)
+  isDefault  Boolean         @default(false)
+  sortOrder  Int             @default(0)
+  createdAt  DateTime        @default(now())
+  updatedAt  DateTime        @updatedAt
+
+  users CutiSignerUser[]
+
+  @@index([role, isActive])
+  @@map("cuti_signers")
+}
+
+/// Pivot: satu penanda tangan cuti terhubung ke banyak user akun.
+model CutiSignerUser {
+  id       String @id @default(uuid())
+  signerId String
+  userId   String
+
+  signer CutiSigner @relation(fields: [signerId], references: [id], onDelete: Cascade)
+  user   User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([signerId, userId])
+  @@index([userId])
+  @@map("cuti_signer_users")
 }
 
 model Spkl {
