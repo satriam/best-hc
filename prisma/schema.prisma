@@ -409,3 +409,55 @@ model SignedDocument {
   @@index([entityType, entityId, isActive])
   @@map("signed_documents")
 }
+
+// ---------------------------------------------------------------------------
+// Laporan bulanan (generate .docx dari template contoh + arsip ke Google Drive)
+// ---------------------------------------------------------------------------
+
+enum LaporanSignerRole {
+  DIBUAT // Dibuat Oleh
+  DIPERIKSA // Diperiksa Oleh
+  DISETUJUI // Disetujui Oleh (boleh lebih dari satu baris: Direktur + Dept Head)
+}
+
+/// Master penanda tangan lembar persetujuan laporan bulanan.
+model LaporanSigner {
+  id         String             @id @default(uuid())
+  role       LaporanSignerRole
+  name       String
+  nip        String?
+  position   String?
+  department String?
+  isActive   Boolean            @default(true)
+  isDefault  Boolean            @default(false)
+  sortOrder  Int                @default(0)
+  createdAt  DateTime           @default(now())
+  updatedAt  DateTime           @updatedAt
+
+  @@index([role, isActive])
+  @@map("laporan_signers")
+}
+
+/// Satu dokumen laporan bulanan. `meta` menyimpan payload lengkap (termasuk
+/// gambar lampiran sebagai data URL) supaya file bisa di-generate ulang saat
+/// diarsipkan ke Drive tanpa menunggu upload ulang dari browser.
+model LaporanBulanan {
+  id           String   @id @default(uuid())
+  period       String // "2026-09"
+  projectName  String
+  docNo        String?
+  title        String
+  version      String   @default("1.0")
+  status       String   @default("draft") // draft | selesai
+  itemCount    Int      @default(0)
+  meta         Json?
+  driveFileId  String?
+  driveLink    String?
+  createdById  String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@unique([period, projectName, version])
+  @@index([period, status])
+  @@map("laporan_bulanan")
+}
