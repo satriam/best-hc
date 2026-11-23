@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import { Building2, MailCheck } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
+import { AuthBackground } from '@/components/auth/AuthBackground';
 
 function VerifyForm() {
   const token = useSearchParams().get('token') ?? '';
@@ -32,7 +33,7 @@ function VerifyForm() {
   };
 
   return (
-    <div className="w-full max-w-md bg-white rounded-2xl shadow-2xl border border-slate-200 p-8 text-center">
+    <div className="w-full max-w-md bg-white/95 backdrop-blur-xl rounded-2xl shadow-2xl shadow-indigo-950/50 border border-white/20 ring-1 ring-white/10 p-8 text-center">
       <div className="w-12 h-12 rounded-2xl bg-indigo-600 flex items-center justify-center text-white mx-auto mb-4">
         <Building2 className="w-6 h-6" />
       </div>
@@ -65,10 +66,10 @@ function VerifyForm() {
 
 export default function VerifyEmailPage() {
   return (
-    <div className="min-h-screen bg-slate-900 flex items-center justify-center p-4 font-sans">
+    <AuthBackground>
       <Suspense fallback={<div className="text-white text-xs">Loading...</div>}>
         <VerifyForm />
       </Suspense>
-    </div>
+    </AuthBackground>
   );
 }

@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Building2, Lock } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
+import { AuthBackground } from '@/components/auth/AuthBackground';
 
 function ResetForm() {
   const router = useRouter();
@@ -53,7 +54,7 @@ function ResetForm() {
   );
 
   return (
-    <div className="w-full max-w-md bg-white rounded-2xl shadow-2xl border border-slate-200 p-8">
+    <div className="w-full max-w-md bg-white/95 backdrop-blur-xl rounded-2xl shadow-2xl shadow-indigo-950/50 border border-white/20 ring-1 ring-white/10 p-8">
       <div className="text-center mb-8">
         <div className="w-12 h-12 rounded-2xl bg-indigo-600 flex items-center justify-center text-white mx-auto mb-4">
           <Building2 className="w-6 h-6" />
@@ -90,10 +91,10 @@ function ResetForm() {
 
 export default function ResetPasswordPage() {
   return (
-    <div className="min-h-screen bg-slate-900 flex items-center justify-center p-4 font-sans">
+    <AuthBackground>
       <Suspense fallback={<div className="text-white text-xs">Loading...</div>}>
         <ResetForm />
       </Suspense>
-    </div>
+    </AuthBackground>
   );
 }

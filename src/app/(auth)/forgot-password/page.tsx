@@ -4,6 +4,7 @@ import React, { useState } from 'react';
 import Link from 'next/link';
 import { Building2, Mail } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
+import { AuthBackground } from '@/components/auth/AuthBackground';
 
 export default function ForgotPasswordPage() {
   const [email, setEmail] = useState('');
@@ -33,8 +34,8 @@ export default function ForgotPasswordPage() {
   };
 
   return (
-    <div className="min-h-screen bg-slate-900 flex items-center justify-center p-4 font-sans">
-      <div className="w-full max-w-md bg-white rounded-2xl shadow-2xl border border-slate-200 p-8">
+    <AuthBackground>
+      <div className="w-full max-w-md bg-white/95 backdrop-blur-xl rounded-2xl shadow-2xl shadow-indigo-950/50 border border-white/20 ring-1 ring-white/10 p-8">
         <div className="text-center mb-8">
           <div className="w-12 h-12 rounded-2xl bg-indigo-600 flex items-center justify-center text-white mx-auto mb-4">
             <Building2 className="w-6 h-6" />
@@ -74,6 +75,6 @@ export default function ForgotPasswordPage() {
           <Link href="/login" className="text-indigo-600 hover:underline">Kembali ke login</Link>
         </p>
       </div>
-    </div>
+    </AuthBackground>
   );
 }
