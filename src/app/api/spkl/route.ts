@@ -5,6 +5,7 @@ import { createSpkl, getSpkls } from '@/services/spkl.service';
 import { getSignerIdsForUser } from '@/services/spkl-signer.service';
 import { createSpklSchema } from '@/schemas/spkl.schema';
 import { normalizeError } from '@/lib/api-error';
+import { featureForbidden } from '@/services/feature.service';
 
 function parseEnumValue<T extends Record<string, string>>(enumObject: T, value: string | null): T[keyof T] | undefined {
   if (!value) return undefined;
@@ -54,6 +55,9 @@ export async function POST(request: Request) {
   if (!session) {
     return NextResponse.json({ success: false, message: 'Unauthorized' }, { status: 401 });
   }
+
+  const denied = await featureForbidden(session, 'SPKL');
+  if (denied) return denied;
 
   const { searchParams } = new URL(request.url);
   // `?strict=1` menjadikan peringatan PP 35/2021 mingguan/bulanan sebagai error (khusus ADMIN).

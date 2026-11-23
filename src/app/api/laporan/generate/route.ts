@@ -4,6 +4,7 @@ import { ApiError, normalizeError } from '@/lib/api-error';
 import { laporanGenerateSchema } from '@/schemas/laporan.schema';
 import { DOCX_MIME, generateLaporan } from '@/services/laporan.service';
 import { buildLaporanFileName } from '@/lib/laporan/format';
+import { featureForbidden } from '@/services/feature.service';
 
 /**
  * POST /api/laporan/generate — body JSON `{ meta, items, signers, ... }`.
@@ -17,6 +18,9 @@ export async function POST(request: Request) {
   if (!session) {
     return NextResponse.json({ success: false, message: 'Unauthorized' }, { status: 401 });
   }
+
+  const denied = await featureForbidden(session, 'LAPORAN');
+  if (denied) return denied;
 
   try {
     const text = await request.text();

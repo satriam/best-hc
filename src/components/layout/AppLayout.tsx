@@ -12,9 +12,11 @@ interface AppLayoutProps {
     email: string;
     role: 'ADMIN' | 'USER';
   };
+  /** Fitur USER yang aktif; dipakai Sidebar. */
+  features?: string[];
 }
 
-export const AppLayout: React.FC<AppLayoutProps> = ({ children, user }) => {
+export const AppLayout: React.FC<AppLayoutProps> = ({ children, user, features }) => {
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
 
   const openMobileNav = useCallback(() => setMobileNavOpen(true), []);
@@ -26,6 +28,7 @@ export const AppLayout: React.FC<AppLayoutProps> = ({ children, user }) => {
         userRole={user.role}
         userName={user.name}
         userEmail={user.email}
+        features={features}
         mobileOpen={mobileNavOpen}
         onClose={closeMobileNav}
       />

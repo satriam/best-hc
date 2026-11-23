@@ -3,6 +3,7 @@ import { getSession } from '@/lib/auth';
 import { getLeaveRequests, createLeaveRequest } from '@/services/leave.service';
 import { createLeaveRequestPayloadSchema } from '@/schemas/leave.schema';
 import { LeaveStatus } from '@prisma/client';
+import { featureForbidden } from '@/services/feature.service';
 
 export async function GET(request: Request) {
   const session = await getSession();
@@ -37,6 +38,9 @@ export async function POST(request: Request) {
   if (!session) {
     return NextResponse.json({ success: false, message: 'Unauthorized' }, { status: 401 });
   }
+
+  const denied = await featureForbidden(session, 'CUTI');
+  if (denied) return denied;
 
   try {
     const text = await request.text();

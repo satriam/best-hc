@@ -19,6 +19,7 @@ import {
   UserCog,
   FileSignature,
   X,
+  SlidersHorizontal,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
@@ -26,6 +27,8 @@ interface SidebarProps {
   userRole?: 'ADMIN' | 'USER';
   userName?: string;
   userEmail?: string;
+  /** Fitur USER yang aktif (CUTI/SPKL/LAPORAN). Diabaikan untuk ADMIN. */
+  features?: string[];
   onLogout?: () => void;
   /** Drawer hanya aktif di bawah breakpoint md. */
   mobileOpen?: boolean;
@@ -36,6 +39,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   userRole = 'USER',
   userName = 'User',
   userEmail = '',
+  features = [],
   onLogout,
   mobileOpen = false,
   onClose,
@@ -102,6 +106,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           userRole={userRole}
           userName={userName}
           userEmail={userEmail}
+          features={features}
           onLogout={onLogout}
         />
       </aside>
@@ -127,6 +132,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
               userRole={userRole}
               userName={userName}
               userEmail={userEmail}
+              features={features}
               onLogout={onLogout}
               onNavigate={handleClose}
               headerAction={
@@ -152,6 +158,7 @@ interface SidebarContentProps {
   userRole: 'ADMIN' | 'USER';
   userName: string;
   userEmail: string;
+  features: string[];
   onLogout?: () => void;
   /** Dipanggil setelah item navigasi diklik (untuk menutup drawer). */
   onNavigate?: () => void;
@@ -162,6 +169,7 @@ const SidebarContent: React.FC<SidebarContentProps> = ({
   userRole,
   userName,
   userEmail,
+  features,
   onLogout,
   onNavigate,
   headerAction,
@@ -181,6 +189,7 @@ const SidebarContent: React.FC<SidebarContentProps> = ({
   };
 
   const isUser = userRole === 'USER';
+  const can = (key: string) => features.includes(key);
 
   return (
     <>
@@ -215,27 +224,33 @@ const SidebarContent: React.FC<SidebarContentProps> = ({
               active={pathname === '/dashboard'}
               onNavigate={onNavigate}
             />
-            <NavItem
-              href="/leave-requests/create"
-              icon={<CalendarPlus className="w-4 h-4" />}
-              label="Pengajuan Cuti"
-              active={pathname === '/leave-requests/create'}
-              onNavigate={onNavigate}
-            />
-            <NavItem
-              href="/leave-requests"
-              icon={<History className="w-4 h-4" />}
-              label="Riwayat Cuti"
-              active={pathname === '/leave-requests'}
-              onNavigate={onNavigate}
-            />
-            <NavItem
-              href="/spkl"
-              icon={<Clock className="w-4 h-4" />}
-              label="SPKL"
-              active={pathname.startsWith('/spkl')}
-              onNavigate={onNavigate}
-            />
+            {can('CUTI') && (
+              <>
+                <NavItem
+                  href="/leave-requests/create"
+                  icon={<CalendarPlus className="w-4 h-4" />}
+                  label="Pengajuan Cuti"
+                  active={pathname === '/leave-requests/create'}
+                  onNavigate={onNavigate}
+                />
+                <NavItem
+                  href="/leave-requests"
+                  icon={<History className="w-4 h-4" />}
+                  label="Riwayat Cuti"
+                  active={pathname === '/leave-requests'}
+                  onNavigate={onNavigate}
+                />
+              </>
+            )}
+            {can('SPKL') && (
+              <NavItem
+                href="/spkl"
+                icon={<Clock className="w-4 h-4" />}
+                label="SPKL"
+                active={pathname.startsWith('/spkl')}
+                onNavigate={onNavigate}
+              />
+            )}
             <NavItem
               href="/profile"
               icon={<User className="w-4 h-4" />}
@@ -323,6 +338,13 @@ const SidebarContent: React.FC<SidebarContentProps> = ({
                 icon={<Users className="w-4 h-4" />}
                 label="Users"
                 active={pathname === '/admin/users'}
+                onNavigate={onNavigate}
+              />
+              <NavItem
+                href="/admin/features"
+                icon={<SlidersHorizontal className="w-4 h-4" />}
+                label="Akses Fitur"
+                active={pathname === '/admin/features'}
                 onNavigate={onNavigate}
               />
               <NavItem

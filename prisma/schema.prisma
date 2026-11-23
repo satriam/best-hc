@@ -58,6 +58,8 @@ model User {
   email           String              @unique
   password        String
   emailVerifiedAt DateTime?
+  /// Fitur menu yang tampil untuk USER (lihat src/lib/features.ts). ADMIN selalu semua.
+  features        String[]            @default(["CUTI", "SPKL"])
   role            Role                @default(USER)
   gender          Gender              @default(MALE)
   createdAt       DateTime            @default(now())
