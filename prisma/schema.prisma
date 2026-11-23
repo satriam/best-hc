@@ -72,6 +72,7 @@ model User {
   spklItems       SpklItem[]
   signedDocuments SignedDocument[]
   cutiSignerLinks CutiSignerUser[]
+  passwordResets  PasswordResetToken[]
 
   @@map("users")
 }
@@ -460,4 +461,21 @@ model LaporanBulanan {
   @@unique([period, projectName, version])
   @@index([period, status])
   @@map("laporan_bulanan")
+}
+
+/// Token reset password sekali pakai. Hanya hash SHA-256 yang disimpan.
+model PasswordResetToken {
+  id        String    @id @default(uuid())
+  userId    String
+  tokenHash String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  ip        String?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([ip, createdAt])
+  @@map("password_reset_tokens")
 }

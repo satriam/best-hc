@@ -6,6 +6,7 @@ import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { loginSchema, LoginInput } from '@/schemas/auth.schema';
 import { Building2, Lock, Mail, ArrowRight } from 'lucide-react';
+import Link from 'next/link';
 import { Button } from '@/components/ui/Button';
 
 function LoginForm() {
@@ -104,6 +105,11 @@ function LoginForm() {
             />
           </div>
           {errors.password && <p className="mt-1 text-xs text-rose-600">{errors.password.message}</p>}
+          <div className="text-right mt-1.5">
+            <Link href="/forgot-password" className="text-xs text-indigo-600 hover:underline">
+              Lupa password?
+            </Link>
+          </div>
         </div>
 
         <Button type="submit" disabled={loading} className="w-full mt-2" size="lg">
