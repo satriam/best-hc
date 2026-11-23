@@ -1,3 +1,5 @@
+import { ZodError } from 'zod';
+
 /**
  * Normalisasi error (Zod / Prisma / Error biasa) menjadi pesan yang aman
  * ditampilkan ke klien. Dipakai route handler API supaya tidak memakai `any`.
@@ -25,6 +27,54 @@ export class ApiError extends Error {
 
 export function isApiError(error: unknown): error is ApiError {
   return error instanceof ApiError;
+}
+
+/**
+ * Deteksi `ZodError` (zod v3/v4). Dipakai supaya kegagalan validasi bentuk body
+ * dibalas 422, bukan 400 — 400/401/403/404/500 tetap milik `ApiError`.
+ *
+ * Selain `instanceof`, dicek juga `name === 'ZodError'` + `issues` array supaya
+ * tetap terdeteksi kalau ada dua salinan modul `zod` di bundel.
+ */
+export function isZodError(error: unknown): error is ZodError {
+  if (error instanceof ZodError) return true;
+  return (
+    error instanceof Error &&
+    error.name === 'ZodError' &&
+    Array.isArray((error as { issues?: unknown }).issues)
+  );
+}
+
+/** Ringkas issue Zod → `{ path, message }` yang aman diserialisasi ke JSON. */
+function summarizeIssues(rawIssues: readonly unknown[]) {
+  return rawIssues.map((issue) => {
+    const item = (issue ?? {}) as { path?: unknown; message?: unknown };
+    const path = Array.isArray(item.path)
+      ? (item.path.filter(
+          (segment) => typeof segment === 'string' || typeof segment === 'number'
+        ) as (string | number)[])
+      : undefined;
+
+    return {
+      path,
+      message: typeof item.message === 'string' ? item.message : undefined,
+    };
+  });
+}
+
+/**
+ * Normalisasi `ZodError` menjadi pesan validasi pertama + daftar issue ringkas.
+ * Pesan pertama dipakai supaya teks yang tampil di UI tetap spesifik (frontend
+ * membaca `message`), sementara `issues` menyimpan detail per field.
+ */
+export function normalizeZodError(error: ZodError, fallback: string): NormalizedError {
+  const issues = summarizeIssues(error.issues ?? []);
+
+  const message = issues
+    .map((issue) => issue.message)
+    .find((value): value is string => Boolean(value));
+
+  return { message: message ?? fallback, issues };
 }
 
 export function normalizeError(error: unknown, fallback: string): NormalizedError {
