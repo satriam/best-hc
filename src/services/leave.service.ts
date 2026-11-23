@@ -2,6 +2,7 @@ import { prisma } from '@/lib/db';
 import { LeaveStatus, QuotaHistoryType, CalculationType, Prisma } from '@prisma/client';
 import { calculateLeaveDays } from '@/lib/calculation';
 import { getHolidayDatesSet } from '@/services/holiday.service';
+import { attachEvidence, WithEvidence } from '@/services/signed-document.service';
 import { CreateLeaveRequestPayload, formatDateId, rangesOverlap } from '@/schemas/leave.schema';
 
 /**
@@ -181,14 +182,14 @@ export interface LeaveRequestSummary {
   requestTypes: Array<{ id: string; leaveType: { id: string; name: string } }>;
 }
 
-/** Pengajuan cuti lengkap + rincian kuota (bentuk respons endpoint API). */
+/** Pengajuan cuti lengkap + rincian kuota + bukti tanda tangan (bentuk respons endpoint API). */
 export type LeaveRequestWithQuotaInfo = Prisma.LeaveRequestGetPayload<{
   include: {
     user: { select: { id: true; name: true; email: true } };
     requestTypes: { include: { leaveType: true } };
     segments: { include: { leaveType: true }; orderBy: { order: 'asc' } };
   };
-}> & { quotaInfo: QuotaInfo };
+}> & { quotaInfo: QuotaInfo } & WithEvidence;
 
 export async function createLeaveRequest(userId: string, input: CreateLeaveRequestPayload) {
   const user = await prisma.user.findUnique({ where: { id: userId, deletedAt: null } });
@@ -1337,7 +1338,7 @@ export async function getLeaveRequests(
     orderBy: { createdAt: 'desc' },
   });
 
-  return attachQuotaInfo(requests);
+  return attachEvidence(await attachQuotaInfo(requests));
 }
 
 export async function getLeaveRequestById(id: string) {

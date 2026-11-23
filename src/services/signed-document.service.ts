@@ -393,3 +393,67 @@ export async function deleteSignedDocument(
 
   return { id: existing.id, driveFileId: existing.driveFileId, alreadyDeleted: false };
 }
+
+/** Bukti tanda tangan yang ditempel ke baris daftar entity (SPKL / pengajuan cuti). */
+export interface SignedEvidenceInfo {
+  id: string;
+  fileName: string;
+  driveFileId: string;
+  driveWebViewLink: string;
+  createdAt: Date;
+}
+
+/** Field tambahan pada tiap baris daftar: `evidence` null = belum ada PDF. */
+export interface WithEvidence {
+  evidence: SignedEvidenceInfo | null;
+  hasEvidence: boolean;
+}
+
+const evidenceSelect = {
+  id: true,
+  entityId: true,
+  fileName: true,
+  driveFileId: true,
+  driveWebViewLink: true,
+  createdAt: true,
+} satisfies Prisma.SignedDocumentSelect;
+
+/**
+ * Tempel `evidence` + `hasEvidence` ke setiap baris daftar entity.
+ *
+ * Satu query `entityId IN (...)` untuk SELURUH daftar — bukan satu query per
+ * baris (anti N+1). Kalau `rows` kosong, query dilewati sama sekali.
+ * Aditif: field yang sudah ada tidak diubah.
+ */
+export async function attachEvidence<T extends { id: string }>(
+  rows: T[],
+  entityType: SignedDocumentEntityType = 'LEAVE_REQUEST'
+): Promise<Array<T & WithEvidence>> {
+  if (rows.length === 0) return [];
+
+  const documents = await prisma.signedDocument.findMany({
+    where: {
+      entityType,
+      entityId: { in: Array.from(new Set(rows.map((row) => row.id))) },
+      isActive: true,
+    },
+    select: evidenceSelect,
+  });
+
+  const byEntityId = new Map(documents.map((document) => [document.entityId, document]));
+
+  return rows.map((row) => {
+    const document = byEntityId.get(row.id);
+    const evidence: SignedEvidenceInfo | null = document
+      ? {
+          id: document.id,
+          fileName: document.fileName,
+          driveFileId: document.driveFileId,
+          driveWebViewLink: document.driveWebViewLink,
+          createdAt: document.createdAt,
+        }
+      : null;
+
+    return { ...row, evidence, hasEvidence: evidence !== null };
+  });
+}
