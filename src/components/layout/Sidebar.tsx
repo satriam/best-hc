@@ -18,6 +18,7 @@ import {
   Clock,
   UserCog,
   FileSignature,
+  FileSpreadsheet,
   X,
   SlidersHorizontal,
 } from 'lucide-react';
@@ -251,6 +252,15 @@ const SidebarContent: React.FC<SidebarContentProps> = ({
                 onNavigate={onNavigate}
               />
             )}
+            {can('LAPORAN') && (
+              <NavItem
+                href="/laporan"
+                icon={<FileSpreadsheet className="w-4 h-4" />}
+                label="Laporan Bulanan"
+                active={pathname.startsWith('/laporan')}
+                onNavigate={onNavigate}
+              />
+            )}
             <NavItem
               href="/profile"
               icon={<User className="w-4 h-4" />}
@@ -325,6 +335,19 @@ const SidebarContent: React.FC<SidebarContentProps> = ({
                 icon={<Clock className="w-4 h-4" />}
                 label="SPKL"
                 active={pathname.startsWith('/spkl')}
+                onNavigate={onNavigate}
+              />
+            </div>
+
+            <div className="space-y-1">
+              <p className="px-3 text-[11px] font-semibold text-slate-500 uppercase tracking-wider mb-2">
+                Dokumen
+              </p>
+              <NavItem
+                href="/laporan"
+                icon={<FileSpreadsheet className="w-4 h-4" />}
+                label="Laporan Bulanan"
+                active={pathname.startsWith('/laporan')}
                 onNavigate={onNavigate}
               />
             </div>

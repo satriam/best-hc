@@ -37,6 +37,9 @@ yarn-error.log*
 # local database dumps / backups (berisi data produksi)
 /.backups/
 
+# berkas hasil generate laporan (docx arsip lokal)
+/uploads/
+
 # vercel
 .vercel
 

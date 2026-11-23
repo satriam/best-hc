@@ -458,6 +458,8 @@ model LaporanBulanan {
   meta         Json?
   driveFileId  String?
   driveLink    String?
+  /// `true` = dokumen .docx dibuat ulang setelah arsip Drive terakhir.
+  needsDriveSync Boolean @default(false)
   createdById  String?
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
@@ -465,6 +467,30 @@ model LaporanBulanan {
   @@unique([period, projectName, version])
   @@index([period, status])
   @@map("laporan_bulanan")
+}
+
+/// Default isian laporan bulanan — selalu satu baris (`id = "default"`).
+/// Dipakai wizard untuk prefill: proyek, judul cover, judul dokumen, nomor
+/// dokumen/SPPH, versi, dan pilihan penanda tangan. `PUT /api/laporan/defaults`
+/// dipanggil otomatis setelah generate supaya periode berikutnya tidak mengetik ulang.
+model LaporanDefault {
+  id                 String   @id @default("default")
+  projectName        String   @default("")
+  coverTitle         String   @default("")
+  docTitle           String   @default("")
+  docNo              String?
+  spphNo             String?
+  version            String   @default("1.0")
+  dibuatSignerId     String?
+  diperiksaSignerId  String?
+  disetujuiSignerId  String?
+  /// Slot kedua blok "Disetujui Oleh" (mis. Dept Head) — opsional.
+  disetujui2SignerId String?
+  updatedById        String?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  @@map("laporan_defaults")
 }
 
 /// Token reset password sekali pakai. Hanya hash SHA-256 yang disimpan.

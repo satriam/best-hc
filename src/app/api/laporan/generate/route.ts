@@ -1,16 +1,25 @@
 import { NextResponse } from 'next/server';
 import { getSession } from '@/lib/auth';
 import { ApiError, normalizeError } from '@/lib/api-error';
-import { laporanGenerateSchema } from '@/schemas/laporan.schema';
-import { DOCX_MIME, generateLaporan } from '@/services/laporan.service';
 import { buildLaporanFileName } from '@/lib/laporan/format';
+import { normalizeLaporanPayload } from '@/lib/laporan/payload';
+import { DOCX_MIME, generateLaporan } from '@/services/laporan.service';
 import { featureForbidden } from '@/services/feature.service';
 
 /**
- * POST /api/laporan/generate — body JSON `{ meta, items, signers, ... }`.
+ * POST /api/laporan/generate — body JSON payload resmi:
  *
- * Respons: file `.docx` (attachment) + header `X-Laporan-Id` berisi id draft
- * yang baru dibuat/diperbarui, sehingga frontend bisa memanggil
+ * ```
+ * { projectName, coverTitle, docTitle, docNo, spphNo,
+ *   periodStart:"YYYY-MM-DD", periodEnd:"YYYY-MM-DD", periodLabel, version,
+ *   items:[{ id?, module, title, category:"pengembangan"|"pemeliharaan",
+ *            status, percent, note, figureNo?, imageRef? }],
+ *   signers:{ dibuatId, diperiksaId, disetujuiId } }
+ * ```
+ *
+ * Payload lama (`meta.project`, `meta.docNo`, `items[].modul/fitur`) tetap
+ * diterima. Respons: file `.docx` (attachment) + header `X-Laporan-Id` berisi id
+ * draft yang baru dibuat/diperbarui, sehingga frontend bisa memanggil
  * `POST /api/laporan/:id/selesai` untuk mengarsipkannya ke Drive.
  */
 export async function POST(request: Request) {
@@ -25,9 +34,9 @@ export async function POST(request: Request) {
   try {
     const text = await request.text();
     const body = text && text.trim().length > 0 ? JSON.parse(text) : {};
-    const validated = laporanGenerateSchema.parse(body);
+    const payload = normalizeLaporanPayload(body);
 
-    const { record, buffer } = await generateLaporan(validated, session.id);
+    const { record, buffer, docxPath } = await generateLaporan(payload, session.id);
     const fileName = buildLaporanFileName(record.projectName, record.period, record.version);
 
     return new NextResponse(new Uint8Array(buffer), {
@@ -38,6 +47,7 @@ export async function POST(request: Request) {
         'Content-Length': String(buffer.length),
         'X-Laporan-Id': record.id,
         'X-Laporan-File-Name': fileName,
+        'X-Laporan-Docx-Path': docxPath,
         'Cache-Control': 'no-store',
       },
     });

@@ -10,14 +10,26 @@ export type LaporanSection = 'development' | 'maintenance';
 
 /** Satu baris gambar yang ditemukan parser (dipakai juga sebagai input generate). */
 export interface ParsedImage {
-  /** Caption tanpa awalan "Figure N-". */
+  /** Caption tanpa awalan "Figure N-" dan tanpa penanda kategori `[...]`. */
   caption: string;
+  /** Judul bersih (alias `caption`; kontrak payload baru memakai `title`). */
+  title?: string;
+  /** Modul hasil parser (heading terdekat atau penanda `[Kategori]`). */
+  module?: string;
+  /** Kategori pekerjaan; default `pengembangan`. */
+  category?: 'pengembangan' | 'pemeliharaan';
+  /** Nomor gambar pada caption asli (`Figure 3`). */
+  figureNo?: string;
   /** Nama file asal di dalam docx (diagnostik). */
   imageName: string;
   /** `image/png`, `image/jpeg`, ... */
   mimeType: string;
   /** Data URL (`data:image/png;base64,...`) bila gambarnya tersedia. */
   dataUrl?: string;
+  /** Status/progress item (mis. dari kolom tabel "Progress"). */
+  status?: string;
+  /** Persentase progress (mis. kolom tabel "Persen"). */
+  percent?: string;
 }
 
 export interface ParsedModule {
@@ -54,6 +66,8 @@ export interface ParseResult {
 
 /** Penanda tangan pada lembar persetujuan. */
 export interface LaporanSignerData {
+  /** Id master penanda tangan (bila dipilih dari master). */
+  id?: string;
   nama?: string;
   jabatan?: string;
   instansi?: string;
@@ -61,6 +75,8 @@ export interface LaporanSignerData {
 }
 
 export interface LaporanItemInput {
+  /** Id baris (dipakai UI untuk edit; tidak wajib). */
+  id?: string;
   modul: string;
   fitur: string;
   status?: string;
@@ -72,7 +88,16 @@ export interface LaporanItemInput {
   gambar?: string;
   /** Caption lampiran; default = `fitur`. */
   caption?: string;
+  /** Nomor gambar di dokumen sumber (`figureNo` pada payload resmi). */
+  figureNo?: string;
+  /** Nama file/gambar acuan (`imageRef` pada payload resmi). */
+  imageRef?: string;
+  /** Field lain dari klien dipertahankan apa adanya (payload resmi boleh berkembang). */
+  extra?: Record<string, unknown>;
 }
+
+/** Kategori payload resmi: `pengembangan` / `pemeliharaan`. */
+export type LaporanItemCategory = 'pengembangan' | 'pemeliharaan';
 
 export interface LaporanRevisionInput {
   versi: string;
@@ -84,6 +109,13 @@ export interface LaporanRevisionInput {
 export interface LaporanMetaInput {
   project: string;
   title: string;
+  /** Judul pendek untuk cover; default = `title` tanpa periode/SPPH. */
+  coverTitle?: string;
+  /** Nomor SPPH (cover). Berbeda dari `docNo` (lembar persetujuan). */
+  spphNo?: string;
+  /** Tanggal mulai/akhir periode kerja (ISO `YYYY-MM-DD`). */
+  periodStart?: string;
+  periodEnd?: string;
   /** Kunci periode `YYYY-MM` (dipakai untuk unique constraint). */
   period: string;
   /** Label tampilan, mis. "04 Oktober - 03 November 2026". Default dari `period`. */
@@ -109,12 +141,38 @@ export interface LaporanPayload {
   scope?: string[];
 }
 
+/**
+ * Hasil normalisasi body request (payload resmi maupun payload lama) — bentuk
+ * internal yang dipakai generator & kolom `meta`.
+ */
+export interface LaporanInput {
+  meta: LaporanMetaInput;
+  items: LaporanItemInput[];
+  signers?: LaporanPayload['signers'];
+  revisions?: LaporanRevisionInput[];
+  intro?: string[];
+  scope?: string[];
+}
+
 /** Bentuk data yang benar-benar dikirim ke docxtemplater. */
 export interface LaporanTemplateData {
   project: string;
+  /** Judul dokumen panjang (lembar persetujuan + pernyataan). */
   title: string;
+  /** Judul pendek pada cover. */
+  coverTitle: string;
+  /** Judul cover baris 1 & 2 (contoh resmi memecah judul jadi dua baris). */
+  coverLine1: string;
+  coverLine2: string;
+  /** Judul lengkap di tabel lembar persetujuan (termasuk periode). */
+  docTitle: string;
+  /** Judul di kalimat pernyataan lembar persetujuan (tanpa periode). */
+  statementTitle: string;
+  /** Nomor SPPH pada cover (bukan No Dokumen). */
+  spphNo: string;
   period: string;
   docNo: string;
+
   version: string;
   tanggal: string;
   dibuatNama: string;

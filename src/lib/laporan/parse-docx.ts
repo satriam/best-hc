@@ -22,7 +22,16 @@ const R = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
 const A = 'http://schemas.openxmlformats.org/drawingml/2006/main';
 const V = 'urn:schemas-microsoft-com:vml';
 
-const CAPTION_RE = /^\s*(figure|gambar)\s*\.?\s*(\d+)\s*[-–—:.)]?\s*/i;
+/**
+ * Caption dengan penanda kategori di dalam bracket:
+ * `Figure 3 [Reward & Punishment] - Halaman daftar ...` → module + title.
+ */
+const CAPTION_BRACKET_RE =
+  /^\s*(?:gambar|figure)\s*\.?\s*(\d+)?\s*\[\s*([^\]]+?)\s*\]\s*[–—\-:]\s*(.+)$/i;
+/** Caption tanpa bracket: `Gambar 4 – Formulir pengajuan` (modul dari heading). */
+const CAPTION_PLAIN_RE = /^\s*(?:gambar|figure)\s*\.?\s*(\d+)\s*[–—\-:.)]\s*(.+)$/i;
+/** Awalan caption untuk membersihkan teks bergaya `Caption` tanpa nomor. */
+const CAPTION_PREFIX_RE = /^\s*(?:gambar|figure)\s*\.?\s*(\d+)?\s*/i;
 const TOC_STYLE_RE = /^(toc\s*\d|table of figures)/i;
 const HEADING_RE = /^heading\s*(\d)/i;
 const VERSION_RE = /(?:versi|version|v)\s*[:.]?\s*(\d+(?:\.\d+)+)/i;
@@ -184,9 +193,142 @@ function paragraphImages(
   return images;
 }
 
+/**
+ * Bersihkan caption: buang awalan `Figure N`, penanda kategori `[...]`, tab +
+ * nomor halaman (baris daftar gambar), dan pemisah sisa.
+ */
 function cleanCaption(text: string): string {
-  const cleaned = text.replace(CAPTION_RE, '').trim();
-  return cleaned || text.trim();
+  return text
+    .replace(/[\t]+\s*\d{1,4}\s*$/, '')
+    .replace(/\s{3,}\d{1,4}\s*$/, '')
+    .replace(/\t+/g, ' ')
+    .replace(CAPTION_PREFIX_RE, '')
+    .replace(/\[[^\]]*\]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .replace(/^[\s–—\-:.)|•]+/, '')
+    .replace(/[\s–—\-:|•]+$/, '')
+    .trim();
+}
+
+/** Kata sambung yang menandakan akhir nama modul pada awalan caption. */
+const CAPTION_STOP_WORDS = new Set([
+  'all', 'form', 'edit', 'template', 'document', 'preview', 'history', 'list',
+  'detail', 'page', 'report', 'view', 'add', 'create', 'update', 'delete',
+  'export', 'import', 'notifikasi', 'formulir', 'halaman', 'daftar', 'tambah',
+  'ubah', 'hapus', 'cetak', 'laporan', 'untuk', 'for', 'pada', 'di',
+]);
+
+/**
+ * Tebak nama modul dari awalan caption pada dokumen tanpa Heading, mis.
+ * "Budget Control all feature" -> "Budget Control", "Tax Management preview
+ * for xlsb" -> "Tax Management". Ambil deret kata Title-Case di depan sampai
+ * ketemu kata sambung/aksi atau kata non-kapital; maksimal 3 kata.
+ */
+function moduleFromCaption(caption: string): string | null {
+  // Tolak teks cover/boilerplate: "Prepared by", tahun ©/@, nama perusahaan.
+  if (/prepared\s+by|@\s*\d{4}|©|bukit\s+energi|persero/i.test(caption)) return null;
+  const words = caption.trim().split(/\s+/);
+  const picked: string[] = [];
+  for (const word of words) {
+    const lower = word.toLowerCase().replace(/[^a-z]/g, '');
+    if (picked.length > 0 && CAPTION_STOP_WORDS.has(lower)) break;
+    // Modul = kata berawalan huruf kapital (Budget, Control, Tax, Management).
+    if (!/^[A-Z]/.test(word)) break;
+    picked.push(word);
+    if (picked.length >= 3) break;
+  }
+  const name = picked.join(' ').trim();
+  return name.length >= 2 ? name : null;
+}
+
+/** Header kolom tabel item pekerjaan yang dikenali (lower-case). */
+const TABLE_HEADER_MODULE = ['aplikasi', 'modul', 'module', 'nama aplikasi', 'nama modul'];
+const TABLE_HEADER_TITLE = ['deskripsi', 'action', 'fitur', 'kegiatan', 'description', 'pekerjaan', 'activity'];
+const TABLE_HEADER_STATUS = ['progress', 'status', 'keterangan', 'progres'];
+const TABLE_HEADER_PERCENT = ['persen', 'persentase', 'percent', '%', 'bobot'];
+
+/** Teks satu sel tabel (gabungan semua paragraf, dirapikan). */
+function cellText(cell: Element): string {
+  return allElements(cell, W, 'p')
+    .map((p) => textOf(p).trim())
+    .filter(Boolean)
+    .join(' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+interface TableItem {
+  module: string;
+  title: string;
+  status: string;
+  percent: string;
+}
+
+/**
+ * Ekstrak item pekerjaan dari tabel ber-header seperti:
+ *   Aplikasi | Deskripsi | Progress      (atau Modul/Action/Status/Persen).
+ * Mendukung kolom "Aplikasi" yang di-merge: sel kosong = modul sama dengan
+ * baris di atasnya. Mengembalikan `null` kalau tabel bukan tabel item.
+ */
+function parseWorkTable(table: Element): TableItem[] | null {
+  const rows = childElements(table, 'tr');
+  if (rows.length < 2) return null;
+
+  const headerCells = childElements(rows[0], 'tc').map((c) => cellText(c).toLowerCase());
+  if (headerCells.length < 2) return null;
+
+  const findCol = (candidates: string[]) =>
+    headerCells.findIndex((h) => candidates.some((c) => h === c || h.includes(c)));
+
+  const moduleCol = findCol(TABLE_HEADER_MODULE);
+  const titleCol = findCol(TABLE_HEADER_TITLE);
+  const statusCol = findCol(TABLE_HEADER_STATUS);
+  const percentCol = findCol(TABLE_HEADER_PERCENT);
+
+  // Minimal harus ada kolom judul/deskripsi; kalau tidak, ini bukan tabel item.
+  if (titleCol < 0) return null;
+
+  const items: TableItem[] = [];
+  let lastModule = '';
+  for (let i = 1; i < rows.length; i += 1) {
+    const cells = childElements(rows[i], 'tc').map((c) => cellText(c));
+    const title = (titleCol >= 0 ? cells[titleCol] : '') ?? '';
+    if (!title.trim()) continue;
+    let moduleName = (moduleCol >= 0 ? cells[moduleCol] : '') ?? '';
+    if (moduleName.trim()) lastModule = moduleName.trim();
+    else moduleName = lastModule; // sel modul di-merge/kosong -> pakai sebelumnya
+    items.push({
+      module: (moduleName || 'Umum').trim() || 'Umum',
+      title: title.trim(),
+      status: (statusCol >= 0 ? cells[statusCol] : '')?.trim() ?? '',
+      percent: (percentCol >= 0 ? cells[percentCol] : '')?.trim() ?? '',
+    });
+  }
+  return items.length > 0 ? items : null;
+}
+
+/** Urai caption menjadi modul (dari `[...]`), judul bersih, dan nomor gambar. */
+function parseCaption(text: string): { module: string | null; title: string; figureNo: string | null } {
+  const cleaned = text
+    .replace(/[\t]+\s*\d{1,4}\s*$/, '')
+    .replace(/\s{3,}\d{1,4}\s*$/, '')
+    .trim();
+
+  const bracket = cleaned.match(CAPTION_BRACKET_RE);
+  if (bracket) {
+    return {
+      module: (bracket[2] ?? '').trim() || null,
+      title: cleanCaption(bracket[3] ?? ''),
+      figureNo: bracket[1] ?? null,
+    };
+  }
+
+  const plain = cleaned.match(CAPTION_PLAIN_RE);
+  if (plain) {
+    return { module: null, title: cleanCaption(plain[2] ?? ''), figureNo: plain[1] ?? null };
+  }
+
+  return { module: null, title: cleanCaption(cleaned), figureNo: null };
 }
 
 function headingLevel(styleName: string): number {
@@ -307,7 +449,8 @@ export function parseLaporanDocx(fileName: string, buffer: Buffer): ParseResult 
   const moduleIndex = new Map<string, ParsedModule>();
   const modules: ParsedModule[] = [];
   const narratives: string[] = [];
-  const pending: ParsedImage[] = [];
+  /** Gambar yang menunggu caption berikutnya (beserta modul asalnya). */
+  const pending: { item: ParsedImage; module: string }[] = [];
 
   let currentH1: string | null = null;
   let currentH2: string | null = null;
@@ -316,15 +459,35 @@ export function parseLaporanDocx(fileName: string, buffer: Buffer): ParseResult 
   let captionCount = 0;
   let skipped = 0;
 
+  // Kunci modul dinormalkan (trim + spasi tunggal + lowercase) supaya modul
+  // bernama sama persis (beda kapital/spasi) selalu digabung ke satu bucket;
+  // nama tampil mengikuti kemunculan pertama.
+  const moduleKey = (name: string) => (name || 'Umum').trim().replace(/\s+/g, ' ').toLowerCase();
   const bucketFor = (name: string): ParsedModule => {
-    const moduleName = name || 'Umum';
-    let bucket = moduleIndex.get(moduleName);
+    const display = (name || 'Umum').trim() || 'Umum';
+    const key = moduleKey(display);
+    let bucket = moduleIndex.get(key);
     if (!bucket) {
-      bucket = { name: moduleName, items: [] };
-      moduleIndex.set(moduleName, bucket);
+      bucket = { name: display, items: [] };
+      moduleIndex.set(key, bucket);
       modules.push(bucket);
     }
     return bucket;
+  };
+
+  /** Pindahkan gambar ke modul lain (penanda `[Kategori]` pada caption). */
+  const moveItem = (item: ParsedImage, fromModule: string, toModule: string) => {
+    if (moduleKey(fromModule) === moduleKey(toModule)) return;
+    const from = moduleIndex.get(moduleKey(fromModule));
+    if (from) {
+      from.items = from.items.filter((entry) => entry !== item);
+      if (from.items.length === 0) {
+        moduleIndex.delete(moduleKey(fromModule));
+        const index = modules.indexOf(from);
+        if (index >= 0) modules.splice(index, 1);
+      }
+    }
+    bucketFor(toModule).items.push(item);
   };
 
   for (const paragraph of paragraphs) {
@@ -352,37 +515,55 @@ export function parseLaporanDocx(fileName: string, buffer: Buffer): ParseResult 
 
     const images = paragraphImages(paragraph, rels, zip);
     if (images.length > 0) {
-      // Belum ada heading sama sekali = masih area cover (logo/judul besar).
-      if (!currentH1 && !currentH2) {
-        skipped += images.length;
-        continue;
-      }
+      // Dokumen tanpa Heading sama sekali (hanya [gambar] + baris caption tebal)
+      // tetap diproses: gambar ditahan `pending`, modul/judul diambil dari baris
+      // berikutnya. Logo cover dekoratif sudah disaring di paragraphImages, jadi
+      // di sini tidak lagi dibuang buta hanya karena belum ada heading.
       const moduleName = currentH2 ?? currentH1 ?? 'Umum';
       for (const image of images) {
         const item: ParsedImage = {
           caption: '',
+          title: '',
+          module: moduleName,
+          category: 'pengembangan',
           imageName: image.imageName,
           mimeType: image.mimeType,
           dataUrl: image.dataUrl,
         };
         bucketFor(moduleName).items.push(item);
-        pending.push(item);
+        pending.push({ item, module: moduleName });
       }
     }
 
     if (!text) continue;
 
-    const isCaption = /^caption$/i.test(styleName) || CAPTION_RE.test(text);
+    const bracketMatch = text.match(CAPTION_BRACKET_RE);
+    const plainMatch = bracketMatch ? null : text.match(CAPTION_PLAIN_RE);
+    const isCaption = /^caption$/i.test(styleName) || Boolean(bracketMatch) || Boolean(plainMatch);
 
     if (isCaption) {
       captionCount += 1;
-      const caption = cleanCaption(text);
+      const parsedCaption = parseCaption(text);
+      // Modul: penanda `[Kategori]` lebih spesifik daripada heading terdekat.
+      const targetModule = parsedCaption.module ?? currentH2 ?? currentH1 ?? 'Umum';
+
       if (pending.length > 0) {
-        for (const item of pending) item.caption = caption;
+        for (const entry of pending) {
+          entry.item.caption = parsedCaption.title;
+          entry.item.title = parsedCaption.title;
+          entry.item.module = targetModule;
+          entry.item.category = 'pengembangan';
+          if (parsedCaption.figureNo) entry.item.figureNo = parsedCaption.figureNo;
+          moveItem(entry.item, entry.module, targetModule);
+        }
         pending.length = 0;
       } else {
-        bucketFor(currentH2 ?? currentH1 ?? 'Umum').items.push({
-          caption,
+        bucketFor(targetModule).items.push({
+          caption: parsedCaption.title,
+          title: parsedCaption.title,
+          module: targetModule,
+          category: 'pengembangan',
+          ...(parsedCaption.figureNo ? { figureNo: parsedCaption.figureNo } : {}),
           imageName: '',
           mimeType: 'image/png',
         });
@@ -391,7 +572,32 @@ export function parseLaporanDocx(fileName: string, buffer: Buffer): ParseResult 
     }
 
     if (pending.length > 0 && text.length <= MAX_CAPTION_LENGTH) {
-      for (const item of pending) item.caption = text;
+      const title = cleanCaption(text);
+      const noHeadingYet = !currentH1 && !currentH2;
+      const guessed = noHeadingYet ? moduleFromCaption(title) : null;
+
+      // Dokumen tanpa Heading: hanya terima gambar yang caption-nya benar-benar
+      // caption konten (menghasilkan modul Title-Case), BUKAN teks cover seperti
+      // "Prepared by: ... @2019". Kalau gagal, gambar itu logo cover -> skip.
+      if (noHeadingYet && !guessed) {
+        // Gambar cover (logo) yang terlanjur masuk bucket: buang lagi.
+        skipped += pending.length;
+        for (const entry of pending) {
+          const bucket = moduleIndex.get(moduleKey(entry.module));
+          if (bucket) bucket.items = bucket.items.filter((it) => it !== entry.item);
+        }
+        pending.length = 0;
+        continue;
+      }
+
+      for (const entry of pending) {
+        entry.item.caption = title;
+        entry.item.title = title;
+        if (guessed && (entry.item.module === 'Umum' || !entry.item.module)) {
+          entry.item.module = guessed;
+          moveItem(entry.item, entry.module, guessed);
+        }
+      }
       pending.length = 0;
       continue;
     }
@@ -403,11 +609,60 @@ export function parseLaporanDocx(fileName: string, buffer: Buffer): ParseResult 
     }
   }
 
-  // Gambar tanpa caption bukan bukti pekerjaan yang bisa dilampirkan.
+  // Item dari TABEL pekerjaan (Aplikasi|Deskripsi|Progress dsb).
+  // Hanya dibaca kalau dokumen BELUM menghasilkan item dari caption gambar —
+  // dokumen yang punya caption lengkap (mis. contoh resmi) memakai gambar
+  // sebagai bukti, tabelnya hanya ringkasan; menambah item tabel di situ akan
+  // menggandakan. Dokumen berbasis-tabel (hanya tabel, tanpa caption) justru
+  // butuh ini supaya modul & itemnya terbaca.
+  // `captionCount` hanya menghitung caption SUNGGUHAN (bracket/plain/gaya
+  // Caption), bukan tebakan baris tebal. Dokumen dengan caption sungguhan
+  // memakai gambar sebagai bukti -> jangan gandakan dengan item tabel.
+  let tableItemCount = 0;
+  if (captionCount === 0) {
+    for (const table of tables) {
+      const tableItems = parseWorkTable(table);
+      if (!tableItems) continue;
+      for (const ti of tableItems) {
+        bucketFor(ti.module).items.push({
+          caption: ti.title,
+          title: ti.title,
+          module: ti.module,
+          category: 'pengembangan',
+          status: ti.status || undefined,
+          percent: ti.percent || undefined,
+          imageName: '',
+          mimeType: '',
+        });
+        tableItemCount += 1;
+      }
+    }
+  }
+
+  // Kalau ada item tabel, modul "judul laporan" dari heading (mis. "Laporan per
+  // September 2026") bukan modul nyata. Gambar tanpa caption di bawahnya
+  // dipindah ke modul "Umum" supaya tidak hilang, lalu bucket judul dibuang.
+  if (tableItemCount > 0) {
+    for (const bucket of [...modules]) {
+      if (!/^laporan\b|report\b/i.test(bucket.name)) continue;
+      const orphanImages = bucket.items.filter((it) => it.dataUrl && !it.caption.trim());
+      if (orphanImages.length === bucket.items.length && orphanImages.length > 0) {
+        for (const img of orphanImages) {
+          img.module = 'Umum';
+          bucketFor('Umum').items.push(img);
+        }
+        const idx = modules.indexOf(bucket);
+        if (idx >= 0) modules.splice(idx, 1);
+        moduleIndex.delete(moduleKey(bucket.name));
+      }
+    }
+  }
+
+  // Item valid = punya caption (teks) ATAU gambar. Item tabel selalu bercaption.
   const filtered: ParsedModule[] = [];
   for (const bucket of modules) {
     const before = bucket.items.length;
-    const items = bucket.items.filter((item) => item.caption.trim().length > 0);
+    const items = bucket.items.filter((item) => item.caption.trim().length > 0 || item.dataUrl);
     skipped += before - items.length;
     if (items.length > 0) filtered.push({ ...bucket, items });
   }

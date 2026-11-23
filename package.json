@@ -25,6 +25,7 @@
     "bcryptjs": "^3.0.3",
     "clsx": "^2.1.1",
     "date-fns": "^4.4.0",
+    "docx-preview": "0.4.1",
     "docxtemplater": "https://registry.npmjs.org/docxtemplater/-/docxtemplater-3.71.1.tgz",
     "docxtemplater-image-module-free": "https://registry.npmjs.org/docxtemplater-image-module-free/-/docxtemplater-image-module-free-1.1.1.tgz",
     "jose": "^6.2.8",

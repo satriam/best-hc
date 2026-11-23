@@ -183,9 +183,12 @@ function pushSubstring(label, oldText, newText) {
   applied.push(`${label}  substring ${JSON.stringify(oldText)}  ->  ${JSON.stringify(newText)}`);
 }
 
-function pushTextAll(oldText, newText, expected, tag) {
+function pushTextAll(oldText, newText, expected, tag, excludeLabel = null) {
   const re = new RegExp(`<w:t(?:\\s[^>]*)?>${escapeRe(oldText)}</w:t>`, 'g');
-  const matches = [...xml.matchAll(re)];
+  const excluded = excludeLabel ? byLabel.get(excludeLabel) : null;
+  const matches = [...xml.matchAll(re)].filter(
+    (m) => !excluded || m.index < excluded.start || m.index > excluded.end
+  );
   if (matches.length !== expected) {
     throw new Error(`teks ${JSON.stringify(oldText)} muncul ${matches.length}×, diharapkan ${expected}×`);
   }
@@ -210,10 +213,12 @@ function pushRemove(label) {
 }
 
 // ------------------------------------------------------- 1) Cover (textbox)
-pushTextAll('Pekerjaan Jasa Joint Development ', '{project}', 2, 'cover');
-pushTextAll('Digitalisasi Aplikasi  Human Capital Operations', '', 2, 'cover');
-pushTextAll('SPPH 6557', '{docNo}', 2, 'cover');
-pushTextAll('Periode 04 September - 03 Oktober 2026', 'Periode {period}', 3, 'cover');
+// Judul cover 2 baris persis seperti contoh (dipecah di build-docx).
+pushTextAll('Pekerjaan Jasa Joint Development ', '{coverLine1}', 2, 'cover');
+pushTextAll('Digitalisasi Aplikasi  Human Capital Operations', '{coverLine2}', 2, 'cover');
+// Nomor SPPH di cover — BUKAN No Dokumen (No Dokumen hanya di lembar persetujuan).
+pushTextAll('SPPH 6557', '{spphNo}', 2, 'cover');
+pushTextAll('Periode 04 September - 03 Oktober 2026', 'Periode {period}', 2, 'cover', 'T0');
 
 // --------------------------------------------------- 2) Tabel info cover T0
 pushText('T0', 'Pengadaan Pekerjaan Joint Development Digitalisasi ', '{project}');
@@ -222,9 +227,10 @@ pushText('T0', '2496/Eks-BEST/BA/PBOE-272/X/202', '{docNo}');
 pushText(
   'T0',
   'Laporan Pekerjaan Jasa Joint Developtment Digitalisasi Aplikasi Human Capital Operations ',
-  '{title} '
+  '{docTitle}'
 );
-// "Periode ..." di T0 sudah diganti oleh pushTextAll di atas.
+// Lembar persetujuan: Nama Proyek + No Dokumen + Judul Dokumen (tanpa periode).
+pushText('T0', 'Periode 04 September - 03 Oktober 2026', '');
 
 // ------------------------------------------- 3) Riwayat perubahan (loop baris)
 pushText('T1', '1.0', '{#revisions}{versi}');
@@ -236,7 +242,7 @@ pushText('T1', 'Dokumen Awal', '{keterangan}{/revisions}');
 pushText(
   'P9',
   'disetujui dan disepakati sebagai Laporan Pekerjaan Jasa Joint Developtment Digitalisasi Aplikasi Human Capital Operations',
-  'disetujui dan disepakati sebagai {title}'
+  'disetujui dan disepakati sebagai {statementTitle}'
 );
 
 // --------------------------------- 5) Lembar persetujuan T2 (isi sel saja)
@@ -255,6 +261,8 @@ pushText('T2', 'Application Development & Services/EIS Department Head', '{diset
 pushText('T2', 'PT Bukit Asam (Persero) Tbk', '{disetujui2Instansi}', 2);
 pushText('T2', 'Zulkurniadi', '{disetujuiNama}');
 pushText('T2', 'Dedek Apriyani', '{disetujui2Nama}');
+
+// 5b) Cover TIDAK diberi tabel identitas: contoh resmi tidak punya.
 
 // ------------------------------------------------- 6) Pendahuluan (loop blok)
 pushParagraphTag('P86', '{#intro}');
@@ -445,18 +453,8 @@ applied.push('P107 -> {%%gambar}');
 // Caption: "Figure " + SEQ field + "- {caption}"
 const captionXml = (() => {
   let source = slice('P108');
-  // Ganti nomor "1" (teks biasa) dengan field SEQ Figure supaya daftar gambar hidup.
-  const runMatch = source.match(/<w:r>(?:(?!<\/w:r>)[\s\S])*?<w:t(?:\s[^>]*)?>1<\/w:t><\/w:r>/);
-  if (!runMatch) throw new Error('run nomor caption tidak ditemukan');
-  const rPrMatch = runMatch[0].match(/<w:rPr>[\s\S]*?<\/w:rPr>/);
-  const rPr = rPrMatch ? rPrMatch[0] : '';
-  const field =
-    `<w:r>${rPr}<w:fldChar w:fldCharType="begin"/></w:r>` +
-    `<w:r>${rPr}<w:instrText xml:space="preserve"> SEQ Figure \\* ARABIC </w:instrText></w:r>` +
-    `<w:r>${rPr}<w:fldChar w:fldCharType="separate"/></w:r>` +
-    `<w:r>${rPr}<w:t>1</w:t></w:r>` +
-    `<w:r>${rPr}<w:fldChar w:fldCharType="end"/></w:r>`;
-  source = source.replace(runMatch[0], field);
+  // Nomor "1" sudah berada di dalam field SEQ Figure milik contoh; cukup
+  // biarkan (membungkusnya lagi menghasilkan field bersarang).
   source = replaceInFragment(source, '- form pengajuan SPPD Driver ', '- {caption}');
   return source;
 })();
@@ -488,6 +486,40 @@ if (!settings.includes('<w:updateFields')) {
   settings = settings.replace('<w:footnotePr>', '<w:updateFields w:val="true" /><w:footnotePr>');
 }
 zip.file('word/settings.xml', settings);
+
+// ------------------------------------- 11b) field nomor halaman di header/footer
+// Header/footer memakai field PAGE (`fldChar begin/instrText/separate/end`).
+// Nilai cache hasil field pada file contoh masih "2" (sisa dokumen sumber),
+// sehingga preview yang tidak menghitung ulang field menampilkan "Page: 2" di
+// semua halaman. Cache di-set "1" (halaman pertama); Word/LibreOffice tetap
+// menghitung ulang per halaman karena `updateFields=true` di settings.xml.
+let headerFieldFixes = 0;
+for (const name of Object.keys(zip.files)) {
+  if (!/^word\/(header|footer)\d*\.xml$/.test(name)) continue;
+  let content = zip.file(name).asText();
+
+  // Field PAGE: cache hasil (teks setelah fldChar "separate") di-set "1".
+  const instrRe = /<w:instrText[^>]*>\s*PAGE\s*<\/w:instrText>/g;
+  let match;
+  while ((match = instrRe.exec(content))) {
+    const separateIndex = content.indexOf('w:fldCharType="separate"', match.index);
+    if (separateIndex === -1) continue;
+    const tStart = content.indexOf('<w:t', separateIndex);
+    const tOpenEnd = content.indexOf('>', tStart);
+    const tClose = content.indexOf('</w:t>', tOpenEnd);
+    if (tStart === -1 || tOpenEnd === -1 || tClose === -1) continue;
+
+    const cached = content.slice(tOpenEnd + 1, tClose);
+    if (cached === '1') continue;
+
+    content = content.slice(0, tOpenEnd + 1) + '1' + content.slice(tClose);
+    headerFieldFixes += 1;
+    instrRe.lastIndex = tOpenEnd + 1;
+  }
+
+  zip.file(name, content);
+}
+applied.push(`field PAGE/NUMPAGES: cache nomor halaman di-set 1 (${headerFieldFixes} field)`);
 
 // ------------------------------------------------------- 12) bersihkan media
 // Hanya image relationship yang benar-benar masih dipakai yang disimpan.
@@ -526,6 +558,180 @@ for (const name of Object.keys(zip.files)) {
   if (keepMedia.has(name)) continue;
   zip.remove(name);
   removedMedia += 1;
+}
+
+// 13/14) Tabel & orientasi halaman dibiarkan persis seperti contoh (A4 portrait).
+
+// ------------------------------------- 15) Cover (halaman 1) tanpa header
+// sectPr sudah `titlePg`; header "first" yang kosong dibuat eksplisit supaya
+// Word, LibreOffice dan docx-preview sama-sama tidak menampilkan header di cover.
+const FIRST_HEADER_ID = 'rIdCoverHeader';
+zip.file(
+  'word/headerCover.xml',
+  '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+    '<w:hdr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"' +
+    ' xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:p/></w:hdr>'
+);
+{
+  const relsFile = 'word/_rels/document.xml.rels';
+  let docRels = zip.file(relsFile).asText();
+  if (!docRels.includes(FIRST_HEADER_ID)) {
+    docRels = docRels.replace(
+      '</Relationships>',
+      `<Relationship Id="${FIRST_HEADER_ID}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header" Target="headerCover.xml"/></Relationships>`
+    );
+    zip.file(relsFile, docRels);
+  }
+  let contentTypes = zip.file('[Content_Types].xml').asText();
+  if (!contentTypes.includes('/word/headerCover.xml')) {
+    contentTypes = contentTypes.replace(
+      '</Types>',
+      '<Override PartName="/word/headerCover.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.header+xml"/></Types>'
+    );
+    zip.file('[Content_Types].xml', contentTypes);
+  }
+  const sectPrs = scanElements(doc, 'w:sectPr', 0, doc.length);
+  const last = sectPrs[sectPrs.length - 1];
+  if (!last) throw new Error('sectPr dokumen tidak ditemukan');
+  let sectPr = doc.slice(last.start, last.end);
+  if (!sectPr.includes('w:type="first"')) {
+    sectPr = sectPr.replace(
+      /<w:headerReference w:type="default"[^>]*\/>/,
+      (ref) => `${ref}<w:headerReference w:type="first" r:id="${FIRST_HEADER_ID}"/>`
+    );
+  }
+  if (!sectPr.includes('<w:titlePg')) sectPr = sectPr.replace('</w:sectPr>', '<w:titlePg/></w:sectPr>');
+  doc = doc.slice(0, last.start) + sectPr + doc.slice(last.end);
+  applied.push('cover: header halaman pertama kosong (titlePg + header first)');
+}
+
+// ------------------------------------- 16) Cover: textbox judul di-center
+// Textbox judul cover punya DUA representasi di dalam mc:AlternateContent:
+//   - DrawingML <wp:anchor> (dipakai Word/LibreOffice modern), dan
+//   - VML <v:shape> fallback (yang justru dirender docx-preview di pratinjau).
+// Aslinya kotak di-anchor ke TEPI KIRI HALAMAN dengan lebar ~full page
+// (595.25pt), jadi teks yang w:jc=center di dalamnya center ke pusat FISIK
+// halaman — bukan ke pusat AREA KONTEN antar-margin tempat logo berada. Itu
+// sebabnya judul tampak geser ~1" ke kanan dari logo.
+// Logo memakai frame kolom teks (mso-position-horizontal-relative:text).
+// Supaya SEJAJAR dengan logo di semua renderer, kotak judul dibuat selebar
+// kolom konten dan diposisikan relatif ke kolom teks, margin-left 0.
+const PAGE_W_TW = 11906; // dari w:pgSz
+const MARGIN_TW = 1440; // left = right (dari w:pgMar)
+const CONTENT_PT = ((PAGE_W_TW - 2 * MARGIN_TW) / 20).toFixed(2); // twips -> pt (1pt=20tw)
+
+// Cover punya 3 textbox full-page (judul "LAPORAN PEKERJAAN", subtitle
+// {coverLine1}.., dan "Prepared by"). Semuanya di-anchor ke tepi kiri halaman
+// dengan lebar ~full page, jadi teks center-nya jatuh ke pusat fisik halaman,
+// bukan pusat kolom konten tempat logo berada. Cocokkan ketiganya.
+const COVER_MARKERS = ['{coverLine1}', 'LAPORAN PEKERJAAN', 'Prepared by'];
+const isCoverTextbox = (xml) =>
+  xml.includes('txbxContent') && COVER_MARKERS.some((mk) => xml.includes(mk));
+
+// 16a) VML fallback — ini yang menentukan tampilan pratinjau (docx-preview).
+{
+  const shapeRe = /<v:shape\b[^>]*style="[^"]*"[\s\S]*?<\/v:shape>/g;
+  let vmlFixed = 0;
+  doc = doc.replace(shapeRe, (shape) => {
+    if (!isCoverTextbox(shape)) return shape;
+    const fixed = shape.replace(/style="([^"]*)"/, (_m, style) => {
+      let parts = style
+        .split(';')
+        .map((p) => p.trim())
+        .filter(Boolean)
+        .filter(
+          (p) =>
+            !/^mso-position-horizontal(-relative)?:/.test(p) &&
+            !/^margin-left:/.test(p) &&
+            !/^width:/.test(p)
+        );
+      parts.push('mso-position-horizontal-relative:text');
+      parts.push('mso-position-horizontal:absolute');
+      parts.push('margin-left:0.00pt');
+      parts.push(`width:${CONTENT_PT}pt`);
+      return `style="${parts.join(';')};"`;
+    });
+    if (fixed !== shape) vmlFixed += 1;
+    return fixed;
+  });
+  applied.push(`cover: VML textbox judul selebar kolom konten (${vmlFixed} shape)`);
+}
+
+// 16b) DrawingML — supaya Word/LibreOffice juga center ke kolom konten.
+{
+  const anchorRe = /<wp:anchor\b[\s\S]*?<\/wp:anchor>/g;
+  let centered = 0;
+  const CONTENT_EMU = Math.round((PAGE_W_TW - 2 * MARGIN_TW) * 635); // 1tw = 635 EMU
+  doc = doc.replace(anchorRe, (anchor) => {
+    if (!isCoverTextbox(anchor)) return anchor;
+    let fixed = anchor.replace(
+      /<wp:positionH\b[^>]*>[\s\S]*?<\/wp:positionH>/,
+      '<wp:positionH relativeFrom="column"><wp:posOffset>0</wp:posOffset></wp:positionH>'
+    );
+    // Kotak selebar kolom konten + teks w:jc=center -> center di kolom.
+    fixed = fixed.replace(/(<wp:extent\b[^>]*\bcx=")\d+(")/, `$1${CONTENT_EMU}$2`);
+    fixed = fixed.replace(/(<a:ext\b[^>]*\bcx=")\d+(")/, `$1${CONTENT_EMU}$2`);
+    fixed = fixed.replace(/<wp:wrapNone\s*\/>/, '<wp:wrapTopAndBottom/>');
+    if (fixed !== anchor) centered += 1;
+    return fixed;
+  });
+  applied.push(`cover: DrawingML textbox judul selebar kolom konten (${centered} anchor)`);
+}
+
+// ------------------------------------- 17) Tabel: muat A4 + rapatkan spasi
+// Beberapa tabel (item pekerjaan & pemeliharaan) lebarnya 9190 twips, melebihi
+// lebar area konten A4 = pgSz - 2*margin = 11906 - 2*1440 = 9026 twips, jadi
+// tampak "besar-besar"/melimpah. Selain itu tiap sel berisi paragraf kosong
+// yang membuat baris tinggi (spasi). Perbaikan:
+//   a. skala tblW + gridCol + lebar sel (tcW) proporsional supaya <= 9026.
+//   b. buang paragraf kosong di dalam sel (sisakan 1 bila sel jadi kosong).
+//   c. beri cell margin kecil (top/bottom 20, left/right 72) biar teks rapat
+//      tapi tidak menempel garis.
+{
+  const CONTENT_TW = 11906 - 2 * 1440; // 9026
+  const TARGET_TW = CONTENT_TW; // batas aman lebar tabel
+  let scaled = 0;
+  let strippedCells = 0;
+
+  doc = doc.replace(/<w:tbl>[\s\S]*?<\/w:tbl>/g, (tbl) => {
+    const gridCols = [...tbl.matchAll(/<w:gridCol w:w="(\d+)"/g)].map((m) => Number(m[1]));
+    const sum = gridCols.reduce((a, b) => a + b, 0);
+    let out = tbl;
+
+    // a) skala lebar kalau melebihi target.
+    if (sum > TARGET_TW) {
+      const factor = TARGET_TW / sum;
+      // gridCol
+      out = out.replace(/<w:gridCol w:w="(\d+)"/g, (_m, w) =>
+        `<w:gridCol w:w="${Math.round(Number(w) * factor)}"`
+      );
+      // tcW tiap sel
+      out = out.replace(/<w:tcW w:w="(\d+)" w:type="dxa"/g, (_m, w) =>
+        `<w:tcW w:w="${Math.round(Number(w) * factor)}" w:type="dxa"`
+      );
+      // tblW dxa
+      out = out.replace(/<w:tblW w:w="(\d+)" w:type="dxa"/g, (_m, w) =>
+        `<w:tblW w:w="${Math.round(Number(w) * factor)}" w:type="dxa"`
+      );
+      scaled += 1;
+    }
+
+    // b) buang paragraf kosong (tanpa <w:t>) di dalam sel.
+    out = out.replace(/<w:tc>[\s\S]*?<\/w:tc>/g, (tc) => {
+      const paras = [...tc.matchAll(/<w:p(?=[\s>])[\s\S]*?<\/w:p>/g)].map((m) => m[0]);
+      const nonEmpty = paras.filter((p) => /<w:t[ >]/.test(p));
+      if (nonEmpty.length === paras.length) return tc; // tak ada yg kosong
+      strippedCells += 1;
+      // susun ulang: tcPr (kalau ada) + paragraf non-kosong (min 1).
+      const tcPr = tc.match(/<w:tcPr>[\s\S]*?<\/w:tcPr>/)?.[0] ?? '';
+      const kept = nonEmpty.length > 0 ? nonEmpty : [paras[0] ?? '<w:p/>'];
+      return `<w:tc>${tcPr}${kept.join('')}</w:tc>`;
+    });
+
+    return out;
+  });
+
+  applied.push(`tabel: skala muat A4 (${scaled} tabel), buang paragraf kosong (${strippedCells} sel)`);
 }
 
 zip.file('word/document.xml', doc);

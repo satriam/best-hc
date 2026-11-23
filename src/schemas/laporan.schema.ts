@@ -45,6 +45,149 @@ export const laporanItemSchema = z.object({
   caption: z.string().trim().max(300).optional(),
 });
 
+/**
+ * Satu item pada payload resmi (`items[]`).
+ *
+ * Menerima dua penamaan sekaligus: kontrak baru (`module` / `title` /
+ * `category`) dan payload lama (`modul` / `fitur` / `section`). Tidak ada field
+ * yang dibuang — `passthrough()` menjaga field baru dari klien.
+ */
+export const laporanPayloadItemSchema = z
+  .object({
+    id: z.string().trim().max(64).optional(),
+    module: z.string().trim().max(150).optional(),
+    title: z.string().trim().max(300).optional(),
+    modul: z.string().trim().max(150).optional(),
+    fitur: z.string().trim().max(300).optional(),
+    /** `pengembangan` | `pemeliharaan` (payload resmi). */
+    category: z.string().trim().max(30).optional(),
+    section: z
+      .enum(['development', 'maintenance', 'pengembangan', 'pemeliharaan'])
+      .optional(),
+    status: z.string().trim().max(50).optional(),
+    percent: z
+      .union([z.number().min(0).max(100), z.string().trim().max(10)])
+      .optional(),
+    note: z.string().trim().max(500).optional(),
+    figureNo: z.union([z.string().trim().max(40), z.number()]).optional(),
+    imageRef: z.string().trim().max(300).optional(),
+    gambar: dataUrlSchema.optional(),
+    caption: z.string().trim().max(300).optional(),
+  })
+  .passthrough();
+
+/** Penanda tangan payload resmi: id master (`dibuatId`) atau objek lama. */
+export const laporanPayloadSignersSchema = z
+  .object({
+    dibuatId: z.string().trim().max(64).optional().nullable(),
+    diperiksaId: z.string().trim().max(64).optional().nullable(),
+    disetujuiId: z.string().trim().max(64).optional().nullable(),
+    disetujui2Id: z.string().trim().max(64).optional().nullable(),
+    dibuat: laporanSignerDataSchema.optional(),
+    diperiksa: laporanSignerDataSchema.optional(),
+    disetujui: laporanSignerDataSchema.optional(),
+    disetujui2: laporanSignerDataSchema.optional(),
+  })
+  .passthrough()
+  .optional();
+
+/**
+ * Payload resmi `POST /api/laporan/generate`, `PUT /api/laporan/[id]`, dan
+ * `POST /api/laporan/[id]/generate`.
+ *
+ * Semua field opsional di level skema: aturan bisnis (wajib `projectName` dan
+ * `title`) diperiksa di `normalizeLaporanPayload()` supaya payload lama
+ * (`meta.project` / `meta.docNo`) tetap diterima, bukan dibalas 400.
+ */
+export const laporanPayloadSchema = z
+  .object({
+    projectName: z.string().trim().max(300).optional(),
+    coverTitle: z.string().trim().max(300).optional(),
+    docTitle: z.string().trim().max(300).optional(),
+    title: z.string().trim().max(300).optional(),
+    docNo: z.string().trim().max(120).optional(),
+    spphNo: z.string().trim().max(120).optional(),
+    periodStart: z.string().trim().max(40).optional(),
+    periodEnd: z.string().trim().max(40).optional(),
+    periodLabel: z.string().trim().max(120).optional(),
+    version: z.string().trim().max(20).optional(),
+    date: z.string().trim().max(40).optional(),
+    items: z.array(laporanPayloadItemSchema).max(300, 'Maksimal 300 item per laporan').optional(),
+    signers: laporanPayloadSignersSchema,
+    meta: z
+      .object({
+        project: z.string().trim().max(300).optional(),
+        projectName: z.string().trim().max(300).optional(),
+        title: z.string().trim().max(300).optional(),
+        docTitle: z.string().trim().max(300).optional(),
+        coverTitle: z.string().trim().max(300).optional(),
+        period: z.string().trim().max(20).optional(),
+        periodLabel: z.string().trim().max(120).optional(),
+        docNo: z.string().trim().max(120).optional(),
+        spphNo: z.string().trim().max(120).optional(),
+        periodStart: z.string().trim().max(40).optional(),
+        periodEnd: z.string().trim().max(40).optional(),
+        version: z.string().trim().max(20).optional(),
+        date: z.string().trim().max(40).optional(),
+      })
+      .passthrough()
+      .optional(),
+    revisions: z
+      .array(
+        z.object({
+          versi: z.string().trim().min(1).max(20),
+          nama: z.string().trim().max(200).optional(),
+          tanggal: z.string().trim().max(40).optional(),
+          keterangan: z.string().trim().max(300).optional(),
+        })
+      )
+      .max(20)
+      .optional(),
+    intro: z.array(z.string().trim().max(2000)).max(20).optional(),
+    scope: z.array(z.string().trim().max(300)).max(50).optional(),
+  })
+  .passthrough();
+
+export type LaporanPayloadBody = z.infer<typeof laporanPayloadSchema>;
+
+/** Body `PUT /api/laporan/defaults` (payload resmi & bentuk UI diterima). */
+export const laporanDefaultsSchema = z
+  .object({
+    project: z.string().trim().max(300).optional(),
+    projectName: z.string().trim().max(300).optional(),
+    coverTitle: z.string().trim().max(300).optional(),
+    title: z.string().trim().max(300).optional(),
+    docTitle: z.string().trim().max(300).optional(),
+    docNo: z.string().trim().max(120).optional().nullable(),
+    spphNo: z.string().trim().max(120).optional().nullable(),
+    version: z.string().trim().max(20).optional(),
+    dibuatSignerId: z.string().trim().max(64).optional().nullable(),
+    diperiksaSignerId: z.string().trim().max(64).optional().nullable(),
+    disetujuiSignerId: z.string().trim().max(64).optional().nullable(),
+    disetujui2SignerId: z.string().trim().max(64).optional().nullable(),
+    /** Bentuk UI: `{ dibuat, diperiksa, disetujui, disetujui2 }` berisi id. */
+    signers: z
+      .object({
+        dibuat: z.string().trim().max(64).optional().nullable(),
+        diperiksa: z.string().trim().max(64).optional().nullable(),
+        disetujui: z.string().trim().max(64).optional().nullable(),
+        disetujui2: z.string().trim().max(64).optional().nullable(),
+      })
+      .passthrough()
+      .optional(),
+  })
+  .passthrough();
+
+export type LaporanDefaultsBody = z.infer<typeof laporanDefaultsSchema>;
+
+/** Body `POST /api/laporan/[id]/selesai`. */
+export const laporanSelesaiSchema = z
+  .object({
+    /** `true` = naikkan versi minor dan simpan file lama sebagai riwayat `_v<old>`. */
+    bumpVersion: z.boolean().optional(),
+  })
+  .passthrough();
+
 export const laporanGenerateSchema = z.object({
   meta: laporanMetaSchema,
   items: z

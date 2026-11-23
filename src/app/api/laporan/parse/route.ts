@@ -67,14 +67,19 @@ export async function POST(request: Request) {
       version: null,
     };
 
+    // Kunci merge dinormalkan (trim + lowercase) supaya modul bernama sama
+    // persis (beda spasi/kapital) digabung jadi satu; nama tampil = yang
+    // pertama terlihat. Berlaku lintas file maupun dalam satu file.
+    const moduleKey = (name: string) => name.trim().replace(/\s+/g, ' ').toLowerCase();
     for (const doc of docs) {
       for (const parsedModule of doc.modules) {
-        const existing = moduleIndex.get(parsedModule.name);
+        const key = moduleKey(parsedModule.name);
+        const existing = moduleIndex.get(key);
         if (existing) {
           existing.items.push(...parsedModule.items);
         } else {
-          const copy: ParsedModule = { name: parsedModule.name, items: [...parsedModule.items] };
-          moduleIndex.set(parsedModule.name, copy);
+          const copy: ParsedModule = { name: parsedModule.name.trim(), items: [...parsedModule.items] };
+          moduleIndex.set(key, copy);
           modules.push(copy);
         }
       }

@@ -79,6 +79,34 @@ export async function getDefaultLaporanSigners(): Promise<{
   };
 }
 
+/**
+ * Id penanda tangan default per slot — dipakai `/api/laporan/defaults` saat
+ * tabel `laporan_defaults` masih kosong supaya form tetap terisi.
+ */
+export async function getDefaultSignerSelection(): Promise<{
+  dibuat: string;
+  diperiksa: string;
+  disetujui: string;
+  disetujui2: string;
+}> {
+  const rows = await getAllLaporanSigners({ activeOnly: true });
+
+  const pick = (role: LaporanSignerRole) =>
+    (rows.find((row) => row.role === role && row.isDefault) ?? rows.find((row) => row.role === role))
+      ?.id ?? '';
+
+  const approvers = rows.filter((row) => row.role === LaporanSignerRole.DISETUJUI);
+  const approverDefault = approvers.find((row) => row.isDefault) ?? approvers[0];
+  const approverSecond = approvers.find((row) => row.id !== approverDefault?.id);
+
+  return {
+    dibuat: pick(LaporanSignerRole.DIBUAT),
+    diperiksa: pick(LaporanSignerRole.DIPERIKSA),
+    disetujui: approverDefault?.id ?? '',
+    disetujui2: approverSecond?.id ?? '',
+  };
+}
+
 async function assertNipUnique(role: LaporanSignerRole, nip: string | null | undefined, excludeId?: string) {
   const normalized = nip?.trim();
   if (!normalized) return;

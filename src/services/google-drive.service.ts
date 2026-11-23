@@ -367,6 +367,58 @@ export async function deleteDriveFile(fileId: string): Promise<DriveDeleteResult
   );
 }
 
+/**
+ * Ganti nama file Drive (dipakai saat versi laporan dinaikkan: file lama
+ * dipertahankan sebagai riwayat dengan akhiran `_v<versi>`).
+ *
+ * `404` dilempar sebagai ApiError 404 supaya pemanggil tahu file arsip hilang.
+ */
+export async function renameDriveFile(fileId: string, newName: string): Promise<{ id: string; name: string }> {
+  const id = (fileId ?? '').trim();
+  const name = (newName ?? '').trim();
+  if (!id) throw new ApiError('driveFileId kosong, tidak ada file yang bisa diganti nama', 500);
+  if (!name) throw new ApiError('Nama file Drive baru kosong', 400);
+
+  const accessToken = await getAccessToken();
+  const url = `${apiBaseUrl()}/drive/v3/files/${encodeURIComponent(id)}?fields=id,name`;
+
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      method: 'PATCH',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ name }),
+    });
+  } catch {
+    throw new ApiError('Tidak bisa menghubungi Google Drive untuk mengganti nama file', 502);
+  }
+
+  const text = await response.text();
+  let payload: { id?: unknown; name?: unknown; error?: { message?: unknown } } = {};
+  try {
+    payload = JSON.parse(text) as typeof payload;
+  } catch {
+    // ditangani di bawah
+  }
+
+  if (response.status === 404) {
+    throw new ApiError('File arsip tidak ditemukan di Google Drive', 404);
+  }
+  if (!response.ok) {
+    const detail =
+      typeof payload.error?.message === 'string' ? `: ${payload.error.message.slice(0, 200)}` : '';
+    throw new ApiError(`Ganti nama file Google Drive gagal (HTTP ${response.status})${detail}`, 502);
+  }
+
+  return {
+    id: typeof payload.id === 'string' && payload.id ? payload.id : id,
+    name: typeof payload.name === 'string' && payload.name ? payload.name : name,
+  };
+}
+
 /** Kompatibilitas pemanggil lama (arsip PDF bertanda tangan). */
 export async function uploadPdfToDrive(
   fileName: string,
