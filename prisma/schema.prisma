@@ -57,6 +57,7 @@ model User {
   name            String
   email           String              @unique
   password        String
+  emailVerifiedAt DateTime?
   role            Role                @default(USER)
   gender          Gender              @default(MALE)
   createdAt       DateTime            @default(now())
@@ -73,6 +74,7 @@ model User {
   signedDocuments SignedDocument[]
   cutiSignerLinks CutiSignerUser[]
   passwordResets  PasswordResetToken[]
+  emailVerifications EmailVerificationToken[]
 
   @@map("users")
 }
@@ -478,4 +480,21 @@ model PasswordResetToken {
   @@index([userId])
   @@index([ip, createdAt])
   @@map("password_reset_tokens")
+}
+
+/// Token verifikasi email / konfirmasi ganti email. `email` = alamat tujuan
+/// (sama dengan email user saat ini = verifikasi; beda = ganti email).
+model EmailVerificationToken {
+  id        String    @id @default(uuid())
+  userId    String
+  email     String
+  tokenHash String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@map("email_verification_tokens")
 }

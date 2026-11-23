@@ -71,6 +71,7 @@ export async function getUserById(id: string) {
     workUnit: user.workUnit || '-',
     name: user.name,
     email: user.email,
+    emailVerifiedAt: user.emailVerifiedAt,
     role: user.role,
     gender: user.gender,
     totalQuota: user.quota?.totalQuota ?? 12,
