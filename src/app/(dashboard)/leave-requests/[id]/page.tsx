@@ -148,6 +148,8 @@ export default function LeaveRequestDetailPage({
       position: string | null;
       isDefault: boolean;
       sortOrder: number;
+      /** User yang terhubung ke penanda tangan ini. */
+      userIdList: string[];
     }>
   >([]);
 
@@ -257,6 +259,7 @@ export default function LeaveRequestDetailPage({
               position?: string | null;
               isDefault?: boolean;
               sortOrder?: number;
+              userIdList?: string[];
             }) => ({
               role: signer.role,
               name: signer.name,
@@ -264,6 +267,7 @@ export default function LeaveRequestDetailPage({
               position: signer.position ?? null,
               isDefault: signer.isDefault ?? false,
               sortOrder: signer.sortOrder ?? 0,
+              userIdList: Array.isArray(signer.userIdList) ? signer.userIdList : [],
             }))
         );
       }
@@ -1185,8 +1189,10 @@ export default function LeaveRequestDetailPage({
           const esc = (s: string) => (s || '').replace(/[&<>"']/g, m => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[m] as string));
 
           // ---- Blok tanda tangan: ambil dari Master Penanda Tangan Cuti ----
-          // Default per role menang; kalau belum ada default, pakai baris aktif pertama.
+          // Urutan: penanda tangan yang TERHUBUNG ke pemohon → default role → baris aktif pertama.
+          const ownerId = requestDetail.userId;
           const pickSigner = (role: 'KNOWING' | 'APPROVER') =>
+            cutiSigners.find((s) => s.role === role && s.userIdList.includes(ownerId)) ??
             cutiSigners.find((s) => s.role === role && s.isDefault) ??
             cutiSigners.find((s) => s.role === role) ??
             null;
