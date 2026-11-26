@@ -1229,28 +1229,18 @@ export default function LeaveRequestDetailPage({
                   ranges: [{ startDate: startDateStr, endDate: endDateStr }],
                 }));
 
-          const rangeText = (r: { startDate: string; endDate: string }) =>
-            `${formatDate(r.startDate)} - ${formatDate(r.endDate)}`;
-
           /**
-           * Tanda x + tanggal pelaksanaan untuk satu baris jenis cuti.
-           * Bila satu jenis dipakai di beberapa rentang, semua rentang ditulis dalam satu sel
-           * (mis. "01/10/2026 - 03/10/2026; 10/10/2026 - 11/10/2026").
+           * Tanda x + daftar rentang tanggal untuk satu baris jenis cuti.
+           * Tiap rentang jadi satu baris Mulai/Sampai sendiri (urut tanggal mulai);
+           * kolom x dan nama jenis cuti di-merge (rowspan) dari baris pertama.
            */
           const dateCells = (predicate: (name: string) => boolean) => {
             const ranges = usedTypes
               .filter((t) => predicate(t.name.toLowerCase()))
-              .flatMap((t) => t.ranges);
-            if (ranges.length === 0) return { mark: '', mulai: '', sampai: '', combined: '' };
-            if (ranges.length === 1) {
-              return {
-                mark: 'x',
-                mulai: formatDate(ranges[0].startDate),
-                sampai: formatDate(ranges[0].endDate),
-                combined: '',
-              };
-            }
-            return { mark: 'x', mulai: '', sampai: '', combined: ranges.map(rangeText).join('; ') };
+              .flatMap((t) => t.ranges)
+              .sort((a, b) => a.startDate.localeCompare(b.startDate))
+              .map((r) => ({ mulai: formatDate(r.startDate), sampai: formatDate(r.endDate) }));
+            return { mark: ranges.length > 0 ? 'x' : '', ranges };
           };
 
           const inc = (match: string) => (name: string) => name.includes(match);
@@ -1285,11 +1275,25 @@ export default function LeaveRequestDetailPage({
           const dCell = `${c}width:105px;text-align:center;padding:2px;font-size:9px;vertical-align:middle;`;
           const mCell = `${c}width:105px;padding:3px;text-align:center;font-size:10px;background-color:#002060;color:#fff;font-weight:bold;-webkit-print-color-adjust:exact;print-color-adjust:exact;vertical-align:middle;`;
 
-          // Baris tabel: satu sel tanggal bila hanya 1 rentang, sel gabungan (colspan) bila beberapa rentang.
-          const rowHtml = (r: { mark: string; label: string; mulai: string; sampai: string; combined: string }) =>
-            r.combined
-              ? `<tr style="height:20px"><td style="${xCell}">${r.mark || '&nbsp;'}</td><td style="${tCell}">${r.label}</td><td colspan="2" style="${dCell}width:auto">${r.combined}</td></tr>`
-              : `<tr style="height:20px"><td style="${xCell}">${r.mark || '&nbsp;'}</td><td style="${tCell}">${r.label}</td><td style="${dCell}">${r.mulai || '&nbsp;'}</td><td style="${dCell}">${r.sampai || '&nbsp;'}</td></tr>`;
+          // Satu baris per rentang tanggal. Kolom x & jenis cuti di-merge (rowspan) bila
+          // jenis yang sama punya beberapa rentang.
+          const rowHtml = (r: {
+            mark: string;
+            label: string;
+            ranges: Array<{ mulai: string; sampai: string }>;
+          }) => {
+            const ranges = r.ranges.length > 0 ? r.ranges : [{ mulai: '', sampai: '' }];
+            const span = ranges.length > 1 ? ` rowspan="${ranges.length}"` : '';
+            return ranges
+              .map((range, i) => {
+                const lead =
+                  i === 0
+                    ? `<td${span} style="${xCell}">${r.mark || '&nbsp;'}</td><td${span} style="${tCell}">${r.label}</td>`
+                    : '';
+                return `<tr style="height:20px">${lead}<td style="${dCell}">${range.mulai || '&nbsp;'}</td><td style="${dCell}">${range.sampai || '&nbsp;'}</td></tr>`;
+              })
+              .join('');
+          };
 
           const cutiRowsHtml = cutiRows.map(rowHtml).join('');
           const izinRowsHtml = izinRows.map(rowHtml).join('');
