@@ -28,6 +28,7 @@ import {
   Mail,
   Shield,
   Upload,
+  RotateCcw,
 } from 'lucide-react';
 import Link from 'next/link';
 
@@ -152,7 +153,7 @@ export default function LeaveRequestDetailPage({
 
   // Status Action Modal State
   const [statusModalOpen, setStatusModalOpen] = useState(false);
-  const [targetStatus, setTargetStatus] = useState<'APPROVED' | 'REJECTED' | 'CANCELLED' | 'DONE'>('DONE');
+  const [targetStatus, setTargetStatus] = useState<'APPROVED' | 'REJECTED' | 'CANCELLED' | 'DONE' | 'ON_PROGRESS'>('DONE');
   const [adminNote, setAdminNote] = useState('');
   const [submittingStatus, setSubmittingStatus] = useState(false);
 
@@ -661,6 +662,21 @@ export default function LeaveRequestDetailPage({
                 className="bg-blue-600 hover:bg-blue-700 text-white font-bold"
               >
                 <CheckCircle2 className="w-4 h-4" /> Tandai Selesai (DONE)
+              </Button>
+            )}
+
+            {/* 2b. Undone (khusus admin): DONE → Menunggu Persetujuan, kuota dikembalikan */}
+            {requestDetail.status === 'DONE' && currentUserRole === 'ADMIN' && (
+              <Button
+                onClick={() => {
+                  setTargetStatus('ON_PROGRESS');
+                  setStatusModalOpen(true);
+                }}
+                variant="outline"
+                size="sm"
+                className="border-amber-300 text-amber-800 bg-amber-50 hover:bg-amber-100 font-bold"
+              >
+                <RotateCcw className="w-4 h-4" /> Undone
               </Button>
             )}
 
@@ -1470,6 +1486,8 @@ export default function LeaveRequestDetailPage({
         title={
           targetStatus === 'DONE'
             ? '🔵 Tandai Pengajuan Selesai (DONE)'
+            : targetStatus === 'ON_PROGRESS'
+            ? '↩️ Undone Pengajuan Selesai'
             : targetStatus === 'APPROVED'
             ? '✅ Setujui Pengajuan Cuti'
             : targetStatus === 'REJECTED'
@@ -1479,10 +1497,17 @@ export default function LeaveRequestDetailPage({
         description="Pembaruan status pengajuan cuti"
       >
         <div className="space-y-4 text-xs">
-          <p className="font-semibold text-slate-700">
-            Apakah Anda yakin ingin mengubah status pengajuan cuti ini menjadi{' '}
-            <strong className="text-indigo-950 uppercase font-black">{targetStatus}</strong>?
-          </p>
+          {targetStatus === 'ON_PROGRESS' ? (
+            <p className="font-semibold text-slate-700">
+              Status akan kembali ke <strong className="text-indigo-950 font-black">Menunggu Persetujuan</strong> dan
+              kuota cuti yang terpotong dikembalikan. Lanjutkan?
+            </p>
+          ) : (
+            <p className="font-semibold text-slate-700">
+              Apakah Anda yakin ingin mengubah status pengajuan cuti ini menjadi{' '}
+              <strong className="text-indigo-950 uppercase font-black">{targetStatus}</strong>?
+            </p>
+          )}
 
           <div>
             <label className="block font-bold text-slate-700 mb-1">Catatan (Opsional)</label>
@@ -1506,6 +1531,8 @@ export default function LeaveRequestDetailPage({
               className={
                 targetStatus === 'DONE'
                   ? 'bg-blue-600 hover:bg-blue-700 text-white font-bold'
+                  : targetStatus === 'ON_PROGRESS'
+                  ? 'bg-amber-600 hover:bg-amber-700 text-white font-bold'
                   : targetStatus === 'APPROVED'
                   ? 'bg-emerald-600 hover:bg-emerald-700 text-white'
                   : 'bg-rose-600 hover:bg-rose-700 text-white'

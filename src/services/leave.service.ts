@@ -683,6 +683,12 @@ export async function updateLeaveStatus(
       return request;
     }
 
+    // DONE hanya bisa dibuka lagi lewat "undone" (kembali ke ON_PROGRESS, kuota dikembalikan).
+    if (previousStatus === LeaveStatus.DONE && newStatus !== LeaveStatus.ON_PROGRESS) {
+      throw new Error('Pengajuan DONE hanya bisa di-undone (kembali ke Menunggu Persetujuan).');
+    }
+    const isUndone = previousStatus === LeaveStatus.DONE && newStatus === LeaveStatus.ON_PROGRESS;
+
     const userId = request.userId;
     const userQuota = request.user.quota;
 
@@ -795,10 +801,16 @@ export async function updateLeaveStatus(
         });
       }
     } else if (isRefunding) {
-      const historyType =
-        newStatus === LeaveStatus.CANCELLED
+      const historyType = isUndone
+        ? QuotaHistoryType.ADMIN_MANUAL_ADJUSTMENT
+        : newStatus === LeaveStatus.CANCELLED
           ? QuotaHistoryType.LEAVE_CANCELLED
           : QuotaHistoryType.LEAVE_REJECTED_AFTER_APPROVAL;
+      const refundLabel = isUndone
+        ? 'Undone pengajuan selesai (DONE) oleh admin'
+        : newStatus === LeaveStatus.CANCELLED
+          ? 'Pembatalan'
+          : 'Penolakan';
 
       // 1. Kembalikan kuota PER JENIS CUTI
       for (const group of daysByType) {
@@ -827,7 +839,7 @@ export async function updateLeaveStatus(
             changeAmount: group.days,
             newQuota: remaining + group.days,
             type: historyType,
-            description: `${newStatus === LeaveStatus.CANCELLED ? 'Pembatalan' : 'Penolakan'} pengajuan cuti — ${typeName} (${describeRanges(
+            description: `${refundLabel}${isUndone ? '' : ' pengajuan cuti'} — ${typeName} (${describeRanges(
               group.ranges
             )}): +${group.days} Hari`,
           },
@@ -855,7 +867,7 @@ export async function updateLeaveStatus(
             changeAmount: annualDays,
             newQuota: currentRemaining + annualDays,
             type: historyType,
-            description: `${newStatus === LeaveStatus.CANCELLED ? 'Pembatalan' : 'Penolakan'} pengajuan cuti (+${annualDays} Hari ${ANNUAL_LEAVE_NAME})`,
+            description: `${refundLabel}${isUndone ? '' : ' pengajuan cuti'} (+${annualDays} Hari ${ANNUAL_LEAVE_NAME})`,
           },
         });
       }
@@ -979,6 +991,13 @@ export async function deleteLeaveRequest(requestId: string, userId: string, isAd
     });
   });
 }
+
+/** Jenis history yang mengembalikan seluruh potongan kuota satu pengajuan. */
+const REFUND_HISTORY_TYPES: QuotaHistoryType[] = [
+  QuotaHistoryType.LEAVE_CANCELLED,
+  QuotaHistoryType.LEAVE_REJECTED_AFTER_APPROVAL,
+  QuotaHistoryType.ADMIN_MANUAL_ADJUSTMENT,
+];
 
 /** Rincian kuota satu jenis cuti pada satu pengajuan. */
 export interface QuotaInfoPerType {
@@ -1155,9 +1174,10 @@ export async function attachQuotaInfo<T extends QuotaInfoRequest>(
     prisma.leaveQuotaHistory.findMany({
       where: {
         leaveRequestId: { in: requestIds },
-        type: QuotaHistoryType.LEAVE_APPROVED,
+        type: { in: [QuotaHistoryType.LEAVE_APPROVED, ...REFUND_HISTORY_TYPES] },
       },
       select: {
+        type: true,
         leaveRequestId: true,
         leaveTypeId: true,
         previousQuota: true,
@@ -1186,11 +1206,18 @@ export async function attachQuotaInfo<T extends QuotaInfoRequest>(
     quotas.map((quota) => [`${quota.userId}|${quota.leaveTypeId}|${quota.year}`, quota])
   );
 
-  // Kelompokkan history per pengajuan per jenis cuti (urut createdAt asc dari query)
+  // Kelompokkan history per pengajuan per jenis cuti (urut createdAt asc dari query).
+  // Baris pengembalian (batal/tolak/undone) mengosongkan potongan sebelumnya, jadi hanya
+  // potongan SETELAH pengembalian terakhir yang dihitung (mis. undone lalu disetujui lagi).
   const historyByRequest = new Map<string, Map<string, QuotaHistoryRow[]>>();
   for (const row of histories) {
     if (!row.leaveRequestId || !row.leaveTypeId) continue;
     const perRequest = historyByRequest.get(row.leaveRequestId) ?? new Map<string, QuotaHistoryRow[]>();
+    if (REFUND_HISTORY_TYPES.includes(row.type)) {
+      perRequest.set(row.leaveTypeId, []);
+      historyByRequest.set(row.leaveRequestId, perRequest);
+      continue;
+    }
     const rows = perRequest.get(row.leaveTypeId) ?? [];
     rows.push(row);
     perRequest.set(row.leaveTypeId, rows);
