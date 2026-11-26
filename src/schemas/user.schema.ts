@@ -10,6 +10,16 @@ export const createUserSchema = z.object({
   role: z.enum(['USER', 'ADMIN']).default('USER'),
   gender: z.enum(['MALE', 'FEMALE']).default('MALE'),
   totalQuota: z.number().int().min(0, 'Kuota tidak boleh negatif').default(12),
+  /** Tanggal masuk kerja, format YYYY-MM-DD. Kosong = tidak diisi. */
+  joinDate: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/, 'Tanggal masuk tidak valid')
+    .optional()
+    .nullable()
+    .or(z.literal('')),
+  /** Tanggal reset kuota cuti tahunan (bulan 1–12, tanggal 1–28). */
+  quotaResetMonth: z.number().int().min(1, 'Bulan reset 1–12').max(12, 'Bulan reset 1–12').optional(),
+  quotaResetDay: z.number().int().min(1, 'Tanggal reset 1–28').max(28, 'Tanggal reset 1–28').optional(),
 });
 
 export const updateUserSchema = z.object({
@@ -22,6 +32,16 @@ export const updateUserSchema = z.object({
   role: z.enum(['USER', 'ADMIN']).optional(),
   gender: z.enum(['MALE', 'FEMALE']).optional(),
   totalQuota: z.number().int().min(0, 'Kuota tidak boleh negatif').optional(),
+  /** Tanggal masuk kerja, format YYYY-MM-DD. Kosong = tidak diisi. */
+  joinDate: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/, 'Tanggal masuk tidak valid')
+    .optional()
+    .nullable()
+    .or(z.literal('')),
+  /** Tanggal reset kuota cuti tahunan (bulan 1–12, tanggal 1–28). */
+  quotaResetMonth: z.number().int().min(1, 'Bulan reset 1–12').max(12, 'Bulan reset 1–12').optional(),
+  quotaResetDay: z.number().int().min(1, 'Tanggal reset 1–28').max(28, 'Tanggal reset 1–28').optional(),
 });
 
 export type CreateUserInput = z.infer<typeof createUserSchema>;

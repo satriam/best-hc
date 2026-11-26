@@ -1,5 +1,6 @@
 import { prisma } from '@/lib/db';
-import { Prisma, QuotaHistoryType } from '@prisma/client';
+import { LeaveStatus, Prisma, QuotaHistoryType } from '@prisma/client';
+import { currentPeriodYear, normalizeRule, periodRange, QuotaResetRule } from '@/lib/quota-period';
 import { ApiError } from '@/lib/api-error';
 import type { QuotaAdjustMode, QuotaSyncMode, QuotaSyncRow } from '@/schemas/quota.schema';
 
@@ -17,6 +18,24 @@ function toRemaining(values: QuotaValues): number {
   return values.totalQuota - values.usedQuota;
 }
 
+/** Kuota >= nilai ini dianggap tanpa batas (sama dengan default baris tanpa `defaultDays`). */
+const UNLIMITED_QUOTA = 999;
+
+/**
+ * Jatah Cuti Tahunan user untuk periode `year` bila barisnya belum ada:
+ * jatah periode sebelumnya (sebelum potongan pinjam cuti), lalu kuota lama
+ * `leave_quotas`, lalu 12 hari. Bukan 999: Cuti Tahunan selalu terbatas.
+ */
+async function defaultAnnualEntitlement(db: Client, userId: string, annualTypeId: string, year: number) {
+  const prev = await db.userLeaveQuota.findFirst({
+    where: { userId, leaveTypeId: annualTypeId, year: year - 1 },
+  });
+  if (prev && prev.totalQuota < UNLIMITED_QUOTA) return prev.totalQuota + (prev.borrowedQuota ?? 0);
+  const generic = await db.leaveQuota.findUnique({ where: { userId } });
+  if (generic && generic.totalQuota < UNLIMITED_QUOTA) return generic.totalQuota;
+  return 12;
+}
+
 export async function ensureUserLeaveQuotas(
   userId: string,
   year: number = new Date().getFullYear(),
@@ -30,13 +49,25 @@ export async function ensureUserLeaveQuotas(
 
   const existingMap = new Map(existingQuotas.map((q: any) => [q.leaveTypeId, q]));
 
-  const missing = (leaveTypes as Array<{ id: string; defaultDays: number | null }>)
+  const types = leaveTypes as Array<{ id: string; name: string; defaultDays: number | null }>;
+  const annualType = types.find((lt) => lt.name === ANNUAL_LEAVE_NAME);
+  const annualDefault =
+    annualType && !existingMap.has(annualType.id) && annualType.defaultDays == null
+      ? await defaultAnnualEntitlement(db, userId, annualType.id, year)
+      : null;
+
+  const missing = types
     .filter((lt) => !existingMap.has(lt.id))
     .map((lt) => ({
       userId,
       leaveTypeId: lt.id,
       year,
-      totalQuota: lt.defaultDays !== null && lt.defaultDays !== undefined ? lt.defaultDays : 999,
+      totalQuota:
+        lt.defaultDays !== null && lt.defaultDays !== undefined
+          ? lt.defaultDays
+          : lt.id === annualType?.id && annualDefault !== null
+            ? annualDefault
+            : UNLIMITED_QUOTA,
       usedQuota: 0,
       borrowedQuota: 0,
     }));
@@ -47,7 +78,8 @@ export async function ensureUserLeaveQuotas(
   }
 }
 
-export async function getUserQuotas(userId: string, year: number = new Date().getFullYear()) {
+export async function getUserQuotas(userId: string, periodYear?: number) {
+  const year = periodYear ?? currentPeriodYear(await getQuotaRule(userId));
   await ensureUserLeaveQuotas(userId, year);
 
   const quotas = await prisma.userLeaveQuota.findMany({
@@ -119,100 +151,195 @@ export async function getAllUserQuotas(year: number = new Date().getFullYear()) 
   };
 }
 
-export async function resetAnnualQuotas(targetYear: number = new Date().getFullYear()) {
+/** Aturan periode kuota milik user (tanggal reset). */
+export async function getQuotaRule(userId: string, db: Client = prisma): Promise<QuotaResetRule> {
+  const user = await db.user.findUnique({
+    where: { id: userId },
+    select: { quotaResetMonth: true, quotaResetDay: true },
+  });
+  return normalizeRule(user ? { resetMonth: user.quotaResetMonth, resetDay: user.quotaResetDay } : null);
+}
+
+/**
+ * Hari Cuti Tahunan yang sudah disetujui (APPROVED/DONE) di periode `periodYear` user.
+ * Segment sudah dipecah per periode saat disimpan, jadi cukup dilihat tanggal mulainya.
+ */
+async function approvedAnnualDaysInPeriod(
+  db: Client,
+  userId: string,
+  annualTypeId: string,
+  periodYear: number,
+  rule: QuotaResetRule
+): Promise<number> {
+  const { start, end } = periodRange(periodYear, rule);
+  const result = await db.leaveRequestSegment.aggregate({
+    _sum: { totalDays: true },
+    where: {
+      leaveTypeId: annualTypeId,
+      startDate: { gte: start, lte: end },
+      leaveRequest: {
+        userId,
+        deletedAt: null,
+        status: { in: [LeaveStatus.APPROVED, LeaveStatus.DONE] },
+      },
+    },
+  });
+  return result._sum.totalDays ?? 0;
+}
+
+interface ResetUser {
+  id: string;
+  name: string;
+  quotaResetMonth: number;
+  quotaResetDay: number;
+  lastQuotaResetYear: number | null;
+}
+
+/**
+ * Reset kuota Cuti Tahunan satu user untuk periode `targetYear`.
+ *
+ * - Jatah = jatah periode sebelumnya, dikurangi Pinjam Cuti periode sebelumnya.
+ * - Terpakai = DIHITUNG ULANG dari cuti yang sudah disetujui di periode itu
+ *   (cuti yang disetujui sebelum reset tetap terhitung; reset dua kali aman).
+ * - Sisa periode lama tidak dibawa (hangus).
+ * - Tabel lama `leave_quotas` ikut disinkronkan hanya bila periode ini sedang berjalan.
+ */
+async function resetUserAnnualQuota(user: ResetUser, targetYear: number, annualTypeId: string) {
+  const rule = normalizeRule({ resetMonth: user.quotaResetMonth, resetDay: user.quotaResetDay });
   const previousYear = targetYear - 1;
 
-  const users = await prisma.user.findMany({ where: { deletedAt: null } });
-  const cutiTahunanType = await prisma.leaveType.findFirst({
-    where: { name: 'Cuti Tahunan' },
-  });
+  return prisma.$transaction(async (tx) => {
+    const [prevAnnualQuota, prevPinjamQuota] = await Promise.all([
+      tx.userLeaveQuota.findFirst({
+        where: { userId: user.id, year: previousYear, leaveTypeId: annualTypeId },
+      }),
+      tx.userLeaveQuota.findFirst({
+        where: { userId: user.id, year: previousYear, leaveType: { name: 'Pinjam Cuti' } },
+      }),
+    ]);
 
-  if (!cutiTahunanType) {
-    throw new Error('Jenis Cuti Tahunan tidak ditemukan');
-  }
-
-  const results = [];
-
-  for (const user of users) {
-    // 1. Check if user has custom entitlement in previous year or existing record
-    const prevAnnualQuota = await prisma.userLeaveQuota.findFirst({
-      where: {
-        userId: user.id,
-        year: previousYear,
-        leaveTypeId: cutiTahunanType.id,
-      },
-    });
-
-    const userEntitlement = prevAnnualQuota ? prevAnnualQuota.totalQuota : 12;
-
-    // 2. Check if user borrowed quota in previous year
-    const prevPinjamQuota = await prisma.userLeaveQuota.findFirst({
-      where: {
-        userId: user.id,
-        year: previousYear,
-        leaveType: { name: 'Pinjam Cuti' },
-      },
-    });
-
+    const userEntitlement =
+      prevAnnualQuota && prevAnnualQuota.totalQuota < UNLIMITED_QUOTA
+        ? prevAnnualQuota.totalQuota + prevAnnualQuota.borrowedQuota
+        : await defaultAnnualEntitlement(tx, user.id, annualTypeId, targetYear);
     const borrowedDays = prevPinjamQuota ? prevPinjamQuota.usedQuota : 0;
     const newAnnualTotal = Math.max(0, userEntitlement - borrowedDays);
 
-    // 3. Ensure target year entry exists
-    await ensureUserLeaveQuotas(user.id, targetYear);
+    await ensureUserLeaveQuotas(user.id, targetYear, tx);
 
-    // 4. Reset Annual Leave quota for target year
-    const annualQuota = await prisma.userLeaveQuota.findFirst({
-      where: {
+    const annualQuota = await tx.userLeaveQuota.findFirst({
+      where: { userId: user.id, year: targetYear, leaveTypeId: annualTypeId },
+    });
+    if (!annualQuota) return null;
+
+    const usedDays = await approvedAnnualDaysInPeriod(tx, user.id, annualTypeId, targetYear, rule);
+    const prevRemaining = annualQuota.totalQuota - annualQuota.usedQuota;
+    const newRemaining = newAnnualTotal - usedDays;
+
+    await tx.userLeaveQuota.update({
+      where: { id: annualQuota.id },
+      data: { totalQuota: newAnnualTotal, usedQuota: usedDays, borrowedQuota: borrowedDays },
+    });
+
+    if (targetYear === currentPeriodYear(rule)) {
+      await tx.leaveQuota.upsert({
+        where: { userId: user.id },
+        create: { userId: user.id, totalQuota: newAnnualTotal, usedQuota: usedDays },
+        update: { totalQuota: newAnnualTotal, usedQuota: usedDays },
+      });
+    }
+
+    const { start, end } = periodRange(targetYear, rule);
+    const periodLabel = `${formatDay(start)} – ${formatDay(end)}`;
+
+    await tx.leaveQuotaHistory.create({
+      data: {
         userId: user.id,
-        year: targetYear,
-        leaveTypeId: cutiTahunanType.id,
+        leaveTypeId: annualTypeId,
+        previousQuota: prevRemaining,
+        changeAmount: newRemaining - prevRemaining,
+        newQuota: newRemaining,
+        type: QuotaHistoryType.ANNUAL_RESET,
+        description:
+          `Reset kuota cuti tahunan periode ${periodLabel}: jatah ${newAnnualTotal} hari` +
+          (borrowedDays > 0 ? ` (${userEntitlement} dikurangi pinjam cuti ${borrowedDays} hari)` : '') +
+          (usedDays > 0 ? `, sudah terpakai ${usedDays} hari dari cuti yang disetujui` : ''),
       },
     });
 
-    if (annualQuota) {
-      const prevRemaining = annualQuota.totalQuota - annualQuota.usedQuota;
-
-      await prisma.userLeaveQuota.update({
-        where: { id: annualQuota.id },
-        data: {
-          totalQuota: newAnnualTotal,
-          usedQuota: 0,
-          borrowedQuota: 0,
-        },
-      });
-
-      // Also sync standard LeaveQuota model for backward compatibility
-      await prisma.leaveQuota.upsert({
-        where: { userId: user.id },
-        create: { userId: user.id, totalQuota: newAnnualTotal, usedQuota: 0 },
-        update: { totalQuota: newAnnualTotal, usedQuota: 0 },
-      });
-
-      // Log Quota History
-      await prisma.leaveQuotaHistory.create({
-        data: {
-          userId: user.id,
-          leaveTypeId: cutiTahunanType.id,
-          previousQuota: prevRemaining,
-          changeAmount: newAnnualTotal - prevRemaining,
-          newQuota: newAnnualTotal,
-          type: QuotaHistoryType.ANNUAL_RESET,
-          description: borrowedDays > 0
-            ? `Auto-reset kuota tahunan ${targetYear}: ${userEntitlement} hari dikurangi ${borrowedDays} hari pinjam cuti tahun ${previousYear} = ${newAnnualTotal} hari`
-            : `Auto-reset kuota cuti tahunan ${targetYear} menjadi ${newAnnualTotal} hari (Batas Jatah: ${userEntitlement} Hari)`,
-        },
-      });
-
-      results.push({
-        userId: user.id,
-        name: user.name,
-        userEntitlement,
-        borrowedDays,
-        newAnnualTotal,
-      });
+    if (user.lastQuotaResetYear === null || user.lastQuotaResetYear < targetYear) {
+      await tx.user.update({ where: { id: user.id }, data: { lastQuotaResetYear: targetYear } });
     }
-  }
 
+    return {
+      userId: user.id,
+      name: user.name,
+      periodStart: start,
+      periodEnd: end,
+      userEntitlement,
+      borrowedDays,
+      usedDays,
+      newAnnualTotal,
+    };
+  });
+}
+
+function formatDay(date: Date) {
+  return `${String(date.getUTCDate()).padStart(2, '0')}/${String(date.getUTCMonth() + 1).padStart(2, '0')}/${date.getUTCFullYear()}`;
+}
+
+async function getAnnualTypeId() {
+  const cutiTahunanType = await prisma.leaveType.findFirst({ where: { name: ANNUAL_LEAVE_NAME } });
+  if (!cutiTahunanType) throw new Error('Jenis Cuti Tahunan tidak ditemukan');
+  return cutiTahunanType.id;
+}
+
+const resetUserSelect = {
+  id: true,
+  name: true,
+  quotaResetMonth: true,
+  quotaResetDay: true,
+  lastQuotaResetYear: true,
+} as const;
+
+/** Reset satu user untuk periode `targetYear` (dipakai admin per user & tes). */
+export async function resetUserQuotaForPeriod(userId: string, targetYear: number) {
+  const annualTypeId = await getAnnualTypeId();
+  const user = await prisma.user.findFirst({ where: { id: userId, deletedAt: null }, select: resetUserSelect });
+  if (!user) throw new Error('User tidak ditemukan');
+  return resetUserAnnualQuota(user, targetYear, annualTypeId);
+}
+
+/** Reset manual oleh admin: semua user, periode `targetYear` (sesuai tanggal reset masing-masing). */
+export async function resetAnnualQuotas(targetYear: number = new Date().getFullYear()) {
+  const annualTypeId = await getAnnualTypeId();
+  const users = await prisma.user.findMany({ where: { deletedAt: null }, select: resetUserSelect });
+
+  const results = [];
+  for (const user of users) {
+    const result = await resetUserAnnualQuota(user, targetYear, annualTypeId);
+    if (result) results.push(result);
+  }
+  return results;
+}
+
+/**
+ * Reset otomatis (cron harian): user yang periode kuotanya sudah berganti
+ * tapi belum di-reset. Idempoten — aman dijalankan berkali-kali, dan
+ * menyusul sendiri bila cron sempat terlewat.
+ */
+export async function resetDueQuotas(now: Date = new Date()) {
+  const annualTypeId = await getAnnualTypeId();
+  const users = await prisma.user.findMany({ where: { deletedAt: null }, select: resetUserSelect });
+
+  const results = [];
+  for (const user of users) {
+    const rule = normalizeRule({ resetMonth: user.quotaResetMonth, resetDay: user.quotaResetDay });
+    const periodYear = currentPeriodYear(rule, now);
+    if (user.lastQuotaResetYear !== null && user.lastQuotaResetYear >= periodYear) continue;
+    const result = await resetUserAnnualQuota(user, periodYear, annualTypeId);
+    if (result) results.push(result);
+  }
   return results;
 }
 

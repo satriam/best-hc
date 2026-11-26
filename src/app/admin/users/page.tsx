@@ -8,6 +8,7 @@ import { Input } from '@/components/ui/Input';
 import { StatusBadge } from '@/components/ui/Badge';
 import { UserPlus, Edit, Trash2, Key } from 'lucide-react';
 import { Role } from '@prisma/client';
+import { QuotaResetFields } from '@/components/admin/QuotaResetFields';
 
 interface UserItem {
   id: string;
@@ -18,6 +19,9 @@ interface UserItem {
   email: string;
   role: Role;
   gender: 'MALE' | 'FEMALE';
+  joinDate?: string | null;
+  quotaResetMonth?: number;
+  quotaResetDay?: number;
   totalQuota: number;
   usedQuota: number;
   remainingQuota: number;
@@ -49,6 +53,9 @@ export default function AdminUsersPage() {
     role: 'USER' as Role,
     gender: 'MALE' as 'MALE' | 'FEMALE',
     totalQuota: 12,
+    joinDate: '',
+    quotaResetMonth: 1,
+    quotaResetDay: 1,
   });
 
   const [newPassword, setNewPassword] = useState('');
@@ -93,6 +100,9 @@ export default function AdminUsersPage() {
       role: 'USER',
       gender: 'MALE',
       totalQuota: 12,
+      joinDate: '',
+      quotaResetMonth: 1,
+      quotaResetDay: 1,
     });
     setSubmitError(null);
     setIsCreateOpen(true);
@@ -110,6 +120,9 @@ export default function AdminUsersPage() {
       role: u.role,
       gender: u.gender || 'MALE',
       totalQuota: u.totalQuota,
+      joinDate: u.joinDate ?? '',
+      quotaResetMonth: u.quotaResetMonth ?? 1,
+      quotaResetDay: u.quotaResetDay ?? 1,
     });
     setSubmitError(null);
   };
@@ -436,6 +449,15 @@ export default function AdminUsersPage() {
             </div>
           </div>
 
+          <QuotaResetFields
+            value={{
+              joinDate: formData.joinDate,
+              quotaResetMonth: formData.quotaResetMonth,
+              quotaResetDay: formData.quotaResetDay,
+            }}
+            onChange={(v) => setFormData({ ...formData, ...v })}
+          />
+
           <div className="pt-4 flex justify-end gap-3 border-t border-slate-100">
             <Button type="button" variant="outline" onClick={() => setIsCreateOpen(false)}>
               Batal
@@ -557,6 +579,15 @@ export default function AdminUsersPage() {
               />
             </div>
           </div>
+
+          <QuotaResetFields
+            value={{
+              joinDate: formData.joinDate,
+              quotaResetMonth: formData.quotaResetMonth,
+              quotaResetDay: formData.quotaResetDay,
+            }}
+            onChange={(v) => setFormData({ ...formData, ...v })}
+          />
 
           <div className="pt-4 flex justify-end gap-3 border-t border-slate-100">
             <Button type="button" variant="outline" onClick={() => setEditingUser(null)}>

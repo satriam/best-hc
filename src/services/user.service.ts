@@ -3,6 +3,12 @@ import bcrypt from 'bcryptjs';
 import { Prisma, QuotaHistoryType } from '@prisma/client';
 import { CreateUserInput, UpdateUserInput } from '@/schemas/user.schema';
 import { ensureUserLeaveQuotas } from '@/services/quota.service';
+import { currentPeriodYear, normalizeRule } from '@/lib/quota-period';
+
+/** Date → 'YYYY-MM-DD' (tanggal tersimpan sebagai tengah malam UTC). */
+function toDateOnly(date: Date | null): string | null {
+  return date ? date.toISOString().slice(0, 10) : null;
+}
 
 /**
  * Kolom `users` yang aman dikirim ke klien.
@@ -20,6 +26,9 @@ const publicUserSelect = {
   email: true,
   role: true,
   gender: true,
+  joinDate: true,
+  quotaResetMonth: true,
+  quotaResetDay: true,
   createdAt: true,
   updatedAt: true,
   deletedAt: true,
@@ -49,6 +58,9 @@ export async function getAllUsers() {
     email: u.email,
     role: u.role,
     gender: u.gender,
+    joinDate: toDateOnly(u.joinDate),
+    quotaResetMonth: u.quotaResetMonth,
+    quotaResetDay: u.quotaResetDay,
     totalQuota: u.quota?.totalQuota ?? 12,
     usedQuota: u.quota?.usedQuota ?? 0,
     remainingQuota: (u.quota?.totalQuota ?? 12) - (u.quota?.usedQuota ?? 0),
@@ -74,6 +86,9 @@ export async function getUserById(id: string) {
     emailVerifiedAt: user.emailVerifiedAt,
     role: user.role,
     gender: user.gender,
+    joinDate: toDateOnly(user.joinDate),
+    quotaResetMonth: user.quotaResetMonth,
+    quotaResetDay: user.quotaResetDay,
     totalQuota: user.quota?.totalQuota ?? 12,
     usedQuota: user.quota?.usedQuota ?? 0,
     remainingQuota: (user.quota?.totalQuota ?? 12) - (user.quota?.usedQuota ?? 0),
@@ -113,6 +128,8 @@ export async function createUser(input: CreateUserInput) {
   }
 
   const hashedPassword = await bcrypt.hash(input.password, 10);
+  const rule = normalizeRule({ resetMonth: input.quotaResetMonth, resetDay: input.quotaResetDay });
+  const periodYear = currentPeriodYear(rule);
 
   return prisma.$transaction(async (tx) => {
     const newUser = await tx.user.create({
@@ -125,6 +142,10 @@ export async function createUser(input: CreateUserInput) {
         password: hashedPassword,
         role: input.role,
         gender: input.gender,
+        joinDate: input.joinDate ? new Date(input.joinDate) : null,
+        quotaResetMonth: rule.resetMonth,
+        quotaResetDay: rule.resetDay,
+        lastQuotaResetYear: periodYear,
         quota: {
           create: {
             totalQuota: input.totalQuota,
@@ -146,7 +167,7 @@ export async function createUser(input: CreateUserInput) {
       },
     });
 
-    await ensureUserLeaveQuotas(newUser.id, new Date().getFullYear(), tx);
+    await ensureUserLeaveQuotas(newUser.id, periodYear, tx);
 
     return newUser;
   });
@@ -176,6 +197,23 @@ export async function updateUser(id: string, input: UpdateUserInput) {
   if (input.password && input.password.trim().length > 0) {
     dataToUpdate.password = await bcrypt.hash(input.password, 10);
   }
+  if (input.joinDate !== undefined) {
+    dataToUpdate.joinDate = input.joinDate ? new Date(input.joinDate) : null;
+  }
+
+  // Tanggal reset berubah → periode berjalan dihitung ulang dengan aturan baru dan
+  // dianggap sudah di-reset, supaya cron tidak langsung me-reset di luar jadwal.
+  const newRule = normalizeRule({
+    resetMonth: input.quotaResetMonth ?? user.quotaResetMonth,
+    resetDay: input.quotaResetDay ?? user.quotaResetDay,
+  });
+  const ruleChanged =
+    newRule.resetMonth !== user.quotaResetMonth || newRule.resetDay !== user.quotaResetDay;
+  if (ruleChanged) {
+    dataToUpdate.quotaResetMonth = newRule.resetMonth;
+    dataToUpdate.quotaResetDay = newRule.resetDay;
+    dataToUpdate.lastQuotaResetYear = currentPeriodYear(newRule);
+  }
 
   return prisma.$transaction(async (tx) => {
     const updated = await tx.user.update({
@@ -183,6 +221,10 @@ export async function updateUser(id: string, input: UpdateUserInput) {
       data: dataToUpdate,
       select: publicUserSelect,
     });
+
+    if (ruleChanged) {
+      await ensureUserLeaveQuotas(id, currentPeriodYear(newRule), tx);
+    }
 
     if (input.totalQuota !== undefined && user.quota) {
       const oldTotal = user.quota.totalQuota;

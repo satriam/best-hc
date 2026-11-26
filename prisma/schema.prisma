@@ -60,6 +60,14 @@ model User {
   emailVerifiedAt DateTime?
   /// Fitur menu yang tampil untuk USER (lihat src/lib/features.ts). ADMIN selalu semua.
   features        String[]            @default(["CUTI", "SPKL"])
+  /// Tanggal masuk kerja (info; dipakai admin sebagai acuan tanggal reset kuota).
+  joinDate        DateTime?
+  /// Tanggal reset kuota cuti tahunan (bulan 1–12, tanggal 1–28). Default 1 Januari.
+  /// Periode kuota "tahun N" = tanggal reset tahun N s/d sehari sebelum tanggal reset tahun N+1.
+  quotaResetMonth Int                 @default(1)
+  quotaResetDay   Int                 @default(1)
+  /// Periode terakhir yang sudah di-reset (dipakai cron reset harian agar idempoten).
+  lastQuotaResetYear Int?
   role            Role                @default(USER)
   gender          Gender              @default(MALE)
   createdAt       DateTime            @default(now())
