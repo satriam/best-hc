@@ -237,6 +237,14 @@ export async function updateUser(id: string, input: UpdateUserInput) {
           data: { totalQuota: newTotal },
         });
 
+        // Samakan jatah Cuti Tahunan periode berjalan (halaman Kuota Cuti membaca tabel ini).
+        const periodYear = currentPeriodYear(newRule);
+        await ensureUserLeaveQuotas(id, periodYear, tx);
+        await tx.userLeaveQuota.updateMany({
+          where: { userId: id, year: periodYear, leaveType: { name: 'Cuti Tahunan' } },
+          data: { totalQuota: newTotal },
+        });
+
         const oldRemaining = oldTotal - user.quota.usedQuota;
         const newRemaining = newTotal - user.quota.usedQuota;
 

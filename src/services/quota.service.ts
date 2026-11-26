@@ -114,6 +114,14 @@ export async function getAllUserQuotas(year: number = new Date().getFullYear()) 
   // Pastikan setiap user punya baris kuota untuk semua jenis cuti — satu INSERT massal,
   // bukan 2 query per user seperti sebelumnya.
   const existingKeys = new Set(existingQuotas.map((q) => `${q.userId}|${q.leaveTypeId}`));
+  const annualType = leaveTypes.find((lt) => lt.name === ANNUAL_LEAVE_NAME && lt.defaultDays == null);
+  const annualDefaults = new Map<string, number>();
+  if (annualType) {
+    for (const user of users) {
+      if (existingKeys.has(`${user.id}|${annualType.id}`)) continue;
+      annualDefaults.set(user.id, await defaultAnnualEntitlement(prisma, user.id, annualType.id, year));
+    }
+  }
   const missing = users.flatMap((user) =>
     leaveTypes
       .filter((lt) => !existingKeys.has(`${user.id}|${lt.id}`))
@@ -121,7 +129,12 @@ export async function getAllUserQuotas(year: number = new Date().getFullYear()) 
         userId: user.id,
         leaveTypeId: lt.id,
         year,
-        totalQuota: lt.defaultDays !== null && lt.defaultDays !== undefined ? lt.defaultDays : 999,
+        totalQuota:
+          lt.defaultDays !== null && lt.defaultDays !== undefined
+            ? lt.defaultDays
+            : lt.id === annualType?.id
+              ? annualDefaults.get(user.id) ?? 12
+              : UNLIMITED_QUOTA,
         usedQuota: 0,
         borrowedQuota: 0,
       }))
