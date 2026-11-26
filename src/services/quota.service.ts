@@ -96,17 +96,50 @@ export async function getUserQuotas(userId: string, periodYear?: number) {
   }));
 }
 
-export async function getAllUserQuotas(year: number = new Date().getFullYear()) {
-  // Query user, jenis cuti, dan baris kuota tahun ini dijalankan paralel (1 wave).
-  const [users, leaveTypes, existingQuotas] = await Promise.all([
-    prisma.user.findMany({
-      where: { deletedAt: null },
-      select: { id: true, name: true, email: true, role: true, gender: true },
-      orderBy: { name: 'asc' },
-    }),
+export interface QuotaListOptions {
+  /** Halaman (mulai 1). Tanpa `page` = semua user (dipakai sinkronisasi). */
+  page?: number;
+  pageSize?: number;
+  /** Cari nama / email / NIP (tidak peka huruf besar-kecil). */
+  q?: string;
+}
+
+export async function getAllUserQuotas(
+  year: number = new Date().getFullYear(),
+  options: QuotaListOptions = {}
+) {
+  const q = options.q?.trim();
+  const userWhere: Prisma.UserWhereInput = {
+    deletedAt: null,
+    ...(q
+      ? {
+          OR: [
+            { name: { contains: q, mode: 'insensitive' } },
+            { email: { contains: q, mode: 'insensitive' } },
+            { nip: { contains: q, mode: 'insensitive' } },
+          ],
+        }
+      : {}),
+  };
+  const paged = options.page !== undefined;
+  const pageSize = Math.min(100, Math.max(1, Math.trunc(options.pageSize ?? 10)));
+  const total = await prisma.user.count({ where: userWhere });
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const page = paged ? Math.min(totalPages, Math.max(1, Math.trunc(options.page ?? 1))) : 1;
+
+  // Hanya user di halaman ini yang dimuat (tanpa `page` = semua).
+  const users = await prisma.user.findMany({
+    where: userWhere,
+    select: { id: true, name: true, email: true, role: true, gender: true },
+    orderBy: [{ name: 'asc' }, { id: 'asc' }],
+    ...(paged ? { skip: (page - 1) * pageSize, take: pageSize } : {}),
+  });
+  const userIds = users.map((u) => u.id);
+
+  const [leaveTypes, existingQuotas] = await Promise.all([
     prisma.leaveType.findMany(),
     prisma.userLeaveQuota.findMany({
-      where: { year, user: { deletedAt: null } },
+      where: { year, userId: { in: userIds } },
       select: { userId: true, leaveTypeId: true },
     }),
   ]);
@@ -145,7 +178,7 @@ export async function getAllUserQuotas(year: number = new Date().getFullYear()) 
   }
 
   const userQuotas = await prisma.userLeaveQuota.findMany({
-    where: { year, user: { deletedAt: null } },
+    where: { year, userId: { in: userIds } },
     include: {
       user: {
         select: { id: true, name: true, email: true, role: true, gender: true },
@@ -161,6 +194,7 @@ export async function getAllUserQuotas(year: number = new Date().getFullYear()) 
       ...quota,
       remainingQuota: quota.totalQuota - quota.usedQuota,
     })),
+    pagination: { page, pageSize: paged ? pageSize : total, total, totalPages: paged ? totalPages : 1 },
   };
 }
 
