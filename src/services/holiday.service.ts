@@ -7,7 +7,7 @@ export async function getAllHolidays() {
 
   // Auto-sync from upset.dev API if database table is empty
   if (holidays.length === 0) {
-    await syncHolidaysFromApi([2025, 2026]);
+    await syncHolidaysFromApi();
     return prisma.nationalHoliday.findMany({
       orderBy: { date: 'asc' },
     });
@@ -16,7 +16,9 @@ export async function getAllHolidays() {
   return holidays;
 }
 
-export async function syncHolidaysFromApi(years: number[] = [2025, 2026]): Promise<number> {
+export async function syncHolidaysFromApi(
+  years: number[] = [new Date().getFullYear() - 1, new Date().getFullYear(), new Date().getFullYear() + 1]
+): Promise<number> {
   let count = 0;
 
   for (const year of years) {
@@ -62,7 +64,7 @@ export async function getHolidayDatesSet(): Promise<Set<string>> {
   });
 
   if (holidays.length === 0) {
-    await syncHolidaysFromApi([2025, 2026]);
+    await syncHolidaysFromApi();
     holidays = await prisma.nationalHoliday.findMany({
       select: { date: true },
     });

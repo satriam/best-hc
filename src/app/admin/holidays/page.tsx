@@ -28,6 +28,10 @@ export default function AdminHolidaysPage() {
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
+  // Tahun lalu, tahun ini, tahun depan — mengikuti tanggal saat halaman dibuka.
+  const currentYear = new Date().getFullYear();
+  const syncYears = [currentYear - 1, currentYear, currentYear + 1];
+
   const safeParseJson = async (res: Response) => {
     const text = await res.text();
     try {
@@ -134,25 +138,18 @@ export default function AdminHolidaysPage() {
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <Button
-            onClick={() => handleSyncApi(2025)}
-            disabled={syncing}
-            variant="outline"
-            size="sm"
-            className="border-indigo-200 text-indigo-700 bg-indigo-50 hover:bg-indigo-100"
-          >
-            <DownloadCloud className="w-4 h-4" /> Sync API 2025
-          </Button>
-
-          <Button
-            onClick={() => handleSyncApi(2026)}
-            disabled={syncing}
-            variant="outline"
-            size="sm"
-            className="border-indigo-200 text-indigo-700 bg-indigo-50 hover:bg-indigo-100"
-          >
-            <DownloadCloud className="w-4 h-4" /> Sync API 2026
-          </Button>
+          {syncYears.map((year) => (
+            <Button
+              key={year}
+              onClick={() => handleSyncApi(year)}
+              disabled={syncing}
+              variant="outline"
+              size="sm"
+              className="border-indigo-200 text-indigo-700 bg-indigo-50 hover:bg-indigo-100"
+            >
+              <DownloadCloud className="w-4 h-4" /> Sync API {year}
+            </Button>
+          ))}
 
           <Button onClick={fetchHolidays} variant="outline" size="sm">
             <RefreshCw className="w-4 h-4" /> Refresh
@@ -193,7 +190,7 @@ export default function AdminHolidaysPage() {
               ) : holidays.length === 0 ? (
                 <tr>
                   <td colSpan={3} className="px-6 py-8 text-center text-slate-400">
-                    Belum ada hari libur nasional terdaftar. Klik <strong>Sync API 2025/2026</strong> di atas.
+                    Belum ada hari libur nasional terdaftar. Klik <strong>Sync API {syncYears.join('/')}</strong> di atas.
                   </td>
                 </tr>
               ) : (
