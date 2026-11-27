@@ -3,6 +3,7 @@ import { getSession } from '@/lib/auth';
 import { updateLeaveStatus } from '@/services/leave.service';
 import { prisma } from '@/lib/db';
 import { updateLeaveStatusSchema } from '@/schemas/leave.schema';
+import { deleteTelegramMessage } from '@/lib/telegram';
 
 export async function PATCH(
   request: Request,
@@ -21,7 +22,10 @@ export async function PATCH(
     const validated = updateLeaveStatusSchema.parse(body);
 
     // Undone (DONE → ON_PROGRESS, kuota dikembalikan) hanya untuk ADMIN.
-    const current = await prisma.leaveRequest.findUnique({ where: { id }, select: { status: true } });
+    const current = await prisma.leaveRequest.findUnique({
+      where: { id },
+      select: { status: true, telegramMessageId: true },
+    });
     if (current?.status === 'DONE' && session.role !== 'ADMIN') {
       return NextResponse.json(
         { success: false, message: 'Hanya admin yang bisa meng-undone pengajuan DONE' },
@@ -31,6 +35,11 @@ export async function PATCH(
 
     // Allow status updates for all users
     const updated = await updateLeaveStatus(id, validated.status, validated.adminNote);
+
+    // Pengajuan dibatalkan → hapus pesan notifikasi di channel Telegram.
+    if (validated.status === 'CANCELLED' && current?.telegramMessageId) {
+      await deleteTelegramMessage(current.telegramMessageId);
+    }
 
     return NextResponse.json({
       success: true,

@@ -344,7 +344,10 @@ export default function LeaveRequestDetailPage({
           const resCalc = await fetch('/api/leave-requests/calculate', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(calcPayload),
+            body: JSON.stringify({
+              ...calcPayload,
+              userId: jsonReq.data.user?.id ?? jsonReq.data.userId,
+            }),
           });
           const jsonCalc = await safeParseJson(resCalc);
           if (jsonCalc.success) {

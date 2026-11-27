@@ -6,9 +6,11 @@ import { Card } from '@/components/ui/Card';
 import { Modal } from '@/components/ui/Modal';
 import { Input } from '@/components/ui/Input';
 import { StatusBadge } from '@/components/ui/Badge';
-import { UserPlus, Edit, Trash2, Key } from 'lucide-react';
+import { UserPlus, Edit, Trash2, Key, LogIn } from 'lucide-react';
+import { useRouter } from 'next/navigation';
 import { Role } from '@prisma/client';
 import { QuotaResetFields } from '@/components/admin/QuotaResetFields';
+import { WorkScheduleFields } from '@/components/admin/WorkScheduleFields';
 
 interface UserItem {
   id: string;
@@ -22,6 +24,9 @@ interface UserItem {
   joinDate?: string | null;
   quotaResetMonth?: number;
   quotaResetDay?: number;
+  workType?: 'NON_SHIFT' | 'SHIFT';
+  rosterPattern?: string | null;
+  rosterStartDate?: string | null;
   totalQuota: number;
   usedQuota: number;
   remainingQuota: number;
@@ -34,13 +39,16 @@ function toErrorMessage(err: unknown): string {
 }
 
 export default function AdminUsersPage() {
+  const router = useRouter();
   const [users, setUsers] = useState<UserItem[]>([]);
   const [loading, setLoading] = useState(true);
+  const [impersonating, setImpersonating] = useState<string | null>(null);
 
   // Modal States
   const [isCreateOpen, setIsCreateOpen] = useState(false);
   const [editingUser, setEditingUser] = useState<UserItem | null>(null);
   const [resettingUser, setResettingUser] = useState<UserItem | null>(null);
+  const [impersonateTarget, setImpersonateTarget] = useState<UserItem | null>(null);
 
   // Form Inputs
   const [formData, setFormData] = useState({
@@ -56,6 +64,9 @@ export default function AdminUsersPage() {
     joinDate: '',
     quotaResetMonth: 1,
     quotaResetDay: 1,
+    workType: 'NON_SHIFT' as 'NON_SHIFT' | 'SHIFT',
+    rosterPattern: '',
+    rosterStartDate: '',
   });
 
   const [newPassword, setNewPassword] = useState('');
@@ -103,6 +114,9 @@ export default function AdminUsersPage() {
       joinDate: '',
       quotaResetMonth: 1,
       quotaResetDay: 1,
+      workType: 'NON_SHIFT',
+      rosterPattern: '',
+      rosterStartDate: '',
     });
     setSubmitError(null);
     setIsCreateOpen(true);
@@ -123,6 +137,9 @@ export default function AdminUsersPage() {
       joinDate: u.joinDate ?? '',
       quotaResetMonth: u.quotaResetMonth ?? 1,
       quotaResetDay: u.quotaResetDay ?? 1,
+      workType: u.workType ?? 'NON_SHIFT',
+      rosterPattern: u.rosterPattern ?? '',
+      rosterStartDate: u.rosterStartDate ?? '',
     });
     setSubmitError(null);
   };
@@ -227,6 +244,24 @@ export default function AdminUsersPage() {
     }
   };
 
+  const handleImpersonate = async () => {
+    if (!impersonateTarget) return;
+    const id = impersonateTarget.id;
+    setImpersonating(id);
+    try {
+      const res = await fetch(`/api/admin/impersonate/${id}`, { method: 'POST' });
+      const json = await res.json();
+      if (!res.ok || !json.success) {
+        throw new Error(json.message || 'Gagal masuk sebagai user');
+      }
+      router.push(json.data?.redirectTo || '/dashboard');
+      router.refresh();
+    } catch (err) {
+      alert(toErrorMessage(err));
+      setImpersonating(null);
+    }
+  };
+
   return (
     <div className="space-y-6">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
@@ -291,6 +326,14 @@ export default function AdminUsersPage() {
                       <span className="text-[10px] font-bold text-indigo-700">
                         {u.gender === 'FEMALE' ? 'Perempuan ♀' : 'Laki-laki ♂'}
                       </span>
+                      {u.workType === 'SHIFT' && (
+                        <span
+                          className="ml-2 text-[10px] font-bold text-amber-800 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded"
+                          title={`Pola roster: ${u.rosterPattern ?? '-'}`}
+                        >
+                          Shift {u.rosterPattern}
+                        </span>
+                      )}
                     </td>
                     <td className="px-5 py-3.5 text-center">
                       <StatusBadge status={u.role} />
@@ -300,6 +343,14 @@ export default function AdminUsersPage() {
                     </td>
                     <td className="px-5 py-3.5 text-center">
                       <div className="flex items-center justify-center space-x-1.5">
+                        <button
+                          onClick={() => setImpersonateTarget(u)}
+                          disabled={impersonating === u.id}
+                          title="Login sebagai User"
+                          className="p-1.5 rounded-lg hover:bg-emerald-50 text-emerald-600 transition-colors disabled:opacity-50"
+                        >
+                          <LogIn className="w-4 h-4" />
+                        </button>
                         <button
                           onClick={() => openEditModal(u)}
                           title="Edit User"
@@ -458,6 +509,15 @@ export default function AdminUsersPage() {
             onChange={(v) => setFormData({ ...formData, ...v })}
           />
 
+          <WorkScheduleFields
+            value={{
+              workType: formData.workType,
+              rosterPattern: formData.rosterPattern,
+              rosterStartDate: formData.rosterStartDate,
+            }}
+            onChange={(v) => setFormData({ ...formData, ...v })}
+          />
+
           <div className="pt-4 flex justify-end gap-3 border-t border-slate-100">
             <Button type="button" variant="outline" onClick={() => setIsCreateOpen(false)}>
               Batal
@@ -589,6 +649,15 @@ export default function AdminUsersPage() {
             onChange={(v) => setFormData({ ...formData, ...v })}
           />
 
+          <WorkScheduleFields
+            value={{
+              workType: formData.workType,
+              rosterPattern: formData.rosterPattern,
+              rosterStartDate: formData.rosterStartDate,
+            }}
+            onChange={(v) => setFormData({ ...formData, ...v })}
+          />
+
           <div className="pt-4 flex justify-end gap-3 border-t border-slate-100">
             <Button type="button" variant="outline" onClick={() => setEditingUser(null)}>
               Batal
@@ -634,6 +703,48 @@ export default function AdminUsersPage() {
             </Button>
           </div>
         </form>
+      </Modal>
+
+      {/* Modal Konfirmasi Login sebagai User */}
+      <Modal
+        isOpen={!!impersonateTarget}
+        onClose={() => setImpersonateTarget(null)}
+        title="Login sebagai User"
+        maxWidth="sm"
+      >
+        <div className="text-center space-y-4">
+          <div className="w-14 h-14 mx-auto rounded-full bg-emerald-50 flex items-center justify-center">
+            <LogIn className="w-7 h-7 text-emerald-600" />
+          </div>
+          <div>
+            <p className="text-sm text-slate-700">
+              Anda akan masuk ke akun{' '}
+              <span className="font-bold text-slate-900">{impersonateTarget?.name}</span>
+            </p>
+            <p className="text-xs text-slate-500 mt-1">{impersonateTarget?.email}</p>
+          </div>
+          <div className="text-left text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+            Aksi ini tercatat di log audit: siapa admin, jadi siapa, dan kapan.
+          </div>
+          <div className="flex gap-3 pt-2">
+            <Button
+              type="button"
+              variant="outline"
+              className="flex-1"
+              onClick={() => setImpersonateTarget(null)}
+            >
+              Batal
+            </Button>
+            <Button
+              type="button"
+              className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white font-bold"
+              disabled={impersonating === impersonateTarget?.id}
+              onClick={handleImpersonate}
+            >
+              {impersonating === impersonateTarget?.id ? 'Memproses...' : 'Ya, Masuk'}
+            </Button>
+          </div>
+        </div>
       </Modal>
     </div>
   );

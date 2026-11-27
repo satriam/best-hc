@@ -1,5 +1,6 @@
 import { differenceInCalendarDays, isSaturday, isSunday, addDays } from 'date-fns';
 import { CalculationType } from '@prisma/client';
+import { countRosterWorkDays, type WorkRoster } from '@/lib/roster';
 
 export { CalculationType };
 
@@ -76,13 +77,16 @@ export function calculateWorkingDays(
 }
 
 /**
- * Calculate leave days based on selected leave types calculation mode
+ * Calculate leave days based on selected leave types calculation mode.
+ * `roster` diisi untuk karyawan SHIFT: hari kerja = hari `K` pada pola roster
+ * (libur roster tidak dihitung; Sabtu/Minggu & libur nasional tidak dikecualikan).
  */
 export function calculateLeaveDays(
   startDate: Date,
   endDate: Date,
   calculationTypes: (CalculationType | string)[],
-  dbHolidaysSet?: Set<string>
+  dbHolidaysSet?: Set<string>,
+  roster?: WorkRoster | null
 ): number {
   const isCalendar = calculationTypes.some(
     (type) => type === CalculationType.CALENDAR_DAYS || type === 'CALENDAR_DAYS'
@@ -90,7 +94,9 @@ export function calculateLeaveDays(
 
   if (isCalendar) {
     return calculateCalendarDays(startDate, endDate);
-  } else {
-    return calculateWorkingDays(startDate, endDate, dbHolidaysSet);
   }
+  if (roster) {
+    return countRosterWorkDays(roster, startDate, endDate);
+  }
+  return calculateWorkingDays(startDate, endDate, dbHolidaysSet);
 }

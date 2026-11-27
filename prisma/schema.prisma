@@ -38,6 +38,11 @@ enum LeaveStatus {
   DONE
 }
 
+enum WorkType {
+  NON_SHIFT
+  SHIFT
+}
+
 enum QuotaHistoryType {
   INITIAL_QUOTA
   LEAVE_APPROVED
@@ -68,6 +73,12 @@ model User {
   quotaResetDay   Int                 @default(1)
   /// Periode terakhir yang sudah di-reset (dipakai cron reset harian agar idempoten).
   lastQuotaResetYear Int?
+  /// NON_SHIFT = libur Sabtu/Minggu + libur nasional. SHIFT = libur mengikuti pola roster.
+  workType        WorkType            @default(NON_SHIFT)
+  /// Pola roster berulang, satu huruf per hari: K = kerja, L = libur (mis. "KKKKLL").
+  rosterPattern   String?
+  /// Tanggal hari pertama pola roster (acuan perulangan).
+  rosterStartDate DateTime?
   role            Role                @default(USER)
   gender          Gender              @default(MALE)
   createdAt       DateTime            @default(now())
@@ -85,8 +96,26 @@ model User {
   cutiSignerLinks CutiSignerUser[]
   passwordResets  PasswordResetToken[]
   emailVerifications EmailVerificationToken[]
+  impersonationsAsAdmin  ImpersonationLog[] @relation("ImpersonationAdmin")
+  impersonationsAsTarget ImpersonationLog[] @relation("ImpersonationTarget")
 
   @@map("users")
+}
+
+/// Jejak audit setiap kali admin masuk sebagai user lain ("login as user").
+model ImpersonationLog {
+  id        String    @id @default(uuid())
+  adminId   String
+  targetId  String
+  startedAt DateTime  @default(now())
+  endedAt   DateTime?
+
+  admin  User @relation("ImpersonationAdmin", fields: [adminId], references: [id], onDelete: Cascade)
+  target User @relation("ImpersonationTarget", fields: [targetId], references: [id], onDelete: Cascade)
+
+  @@index([adminId, startedAt])
+  @@index([targetId, startedAt])
+  @@map("impersonation_logs")
 }
 
 model LeaveQuota {
@@ -148,6 +177,8 @@ model LeaveRequest {
   attachmentUrl  String?
   status         LeaveStatus        @default(ON_PROGRESS)
   adminNote      String?
+  /// ID pesan notifikasi Telegram (channel) untuk pengajuan ini; dihapus saat CANCELLED.
+  telegramMessageId Int?
   createdAt      DateTime           @default(now())
   updatedAt      DateTime           @updatedAt
   deletedAt      DateTime?
@@ -350,6 +381,8 @@ model Spkl {
   approvedAt   DateTime?
   approvedById String?
   rejectedNote String?
+  /// ID pesan notifikasi Telegram (channel) untuk SPKL ini; dihapus saat CANCELLED.
+  telegramMessageId Int?
   createdAt    DateTime   @default(now())
   updatedAt    DateTime   @updatedAt
   deletedAt    DateTime?

@@ -13,6 +13,7 @@ import {
   splitRangeByPeriod,
 } from '@/lib/quota-period';
 import { ensureUserLeaveQuotas, getQuotaRule } from '@/services/quota.service';
+import { toWorkRoster, type WorkRoster } from '@/lib/roster';
 
 /**
  * Segment yang sudah dinormalisasi (tanggal sudah berupa Date).
@@ -98,7 +99,8 @@ export function computeSegments(
   segments: NormalizedSegment[],
   leaveTypeMap: Map<string, { id: string; name: string; calculationType: CalculationType | string }>,
   holidayDatesSet: Set<string>,
-  legacyCalculationTypes?: (CalculationType | string)[]
+  legacyCalculationTypes?: (CalculationType | string)[],
+  roster?: WorkRoster | null
 ): ComputedSegment[] {
   return segments.map((segment) => {
     const leaveType = leaveTypeMap.get(segment.leaveTypeId);
@@ -111,7 +113,8 @@ export function computeSegments(
       segment.startDate,
       segment.endDate,
       calcTypes,
-      holidayDatesSet
+      holidayDatesSet,
+      roster
     );
 
     return { ...segment, totalDays };
@@ -274,7 +277,8 @@ export async function createLeaveRequest(userId: string, input: CreateLeaveReque
     leaveTypeMap,
     holidayDatesSet,
     // Bentuk lama: beberapa jenis cuti pada satu rentang → pakai seluruh mode perhitungan (perilaku lama)
-    isLegacy ? leaveTypes.map((t) => t.calculationType) : undefined
+    isLegacy ? leaveTypes.map((t) => t.calculationType) : undefined,
+    toWorkRoster(user)
   );
 
   // 3. Envelope agregat (start paling awal, end paling akhir, total = jumlah segment)
@@ -495,7 +499,8 @@ export async function updateLeaveRequest(
       segments,
       leaveTypeMap,
       holidayDatesSet,
-      isLegacyCalc ? leaveTypes.map((t) => t.calculationType) : undefined
+      isLegacyCalc ? leaveTypes.map((t) => t.calculationType) : undefined,
+      toWorkRoster(existing.user)
     );
 
     const envelope = buildEnvelope(computedSegments);

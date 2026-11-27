@@ -6,26 +6,38 @@ const JWT_SECRET = new TextEncoder().encode(
 );
 
 const COOKIE_NAME = 'besthcm_session';
+const IMPERSONATE_COOKIE_NAME = 'besthcm_impersonate';
+
+async function readPayload(token: string | undefined) {
+  if (!token) return null;
+  try {
+    const { payload } = await jwtVerify(token, JWT_SECRET);
+    return payload;
+  } catch {
+    return null;
+  }
+}
 
 export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
-  const token = request.cookies.get(COOKIE_NAME)?.value;
 
-  let user: { id: string; name: string; email: string; role: string } | null = null;
+  // Sesi admin asli (selalu dari cookie utama, tidak terpengaruh impersonasi).
+  const adminPayload = await readPayload(request.cookies.get(COOKIE_NAME)?.value);
+  const adminUser = adminPayload
+    ? {
+        id: adminPayload.id as string,
+        name: adminPayload.name as string,
+        email: adminPayload.email as string,
+        role: adminPayload.role as string,
+      }
+    : null;
 
-  if (token) {
-    try {
-      const { payload } = await jwtVerify(token, JWT_SECRET);
-      user = {
-        id: payload.id as string,
-        name: payload.name as string,
-        email: payload.email as string,
-        role: payload.role as string,
-      };
-    } catch {
-      user = null;
-    }
-  }
+  // Sesi efektif: bila sedang "login as user", pakai data target.
+  const impersonatePayload = await readPayload(request.cookies.get(IMPERSONATE_COOKIE_NAME)?.value);
+  const impersonateData = impersonatePayload?.data as
+    | { target?: { id: string; name: string; email: string; role: string } }
+    | undefined;
+  const user = adminUser?.role === 'ADMIN' && impersonateData?.target ? impersonateData.target : adminUser;
 
   // If visiting login page while logged in
   if (pathname === '/login' || pathname === '/') {

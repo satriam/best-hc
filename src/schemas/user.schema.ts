@@ -20,6 +20,24 @@ export const createUserSchema = z.object({
   /** Tanggal reset kuota cuti tahunan (bulan 1–12, tanggal 1–28). */
   quotaResetMonth: z.number().int().min(1, 'Bulan reset 1–12').max(12, 'Bulan reset 1–12').optional(),
   quotaResetDay: z.number().int().min(1, 'Tanggal reset 1–28').max(28, 'Tanggal reset 1–28').optional(),
+  /** NON_SHIFT (default) atau SHIFT. SHIFT wajib punya pola roster + tanggal mulai. */
+  workType: z.enum(['NON_SHIFT', 'SHIFT']).optional(),
+  /** Pola roster: K = kerja, L = libur, 2–28 hari, mis. "KKKKLL". */
+  rosterPattern: z
+    .string()
+    .trim()
+    .toUpperCase()
+    .regex(/^[KL]{2,28}$/, 'Pola roster hanya huruf K/L, 2–28 hari')
+    .refine((v) => v.includes('K'), 'Pola roster minimal punya satu hari kerja')
+    .optional()
+    .nullable()
+    .or(z.literal('')),
+  rosterStartDate: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/, 'Tanggal mulai roster tidak valid')
+    .optional()
+    .nullable()
+    .or(z.literal('')),
 });
 
 export const updateUserSchema = z.object({
@@ -42,6 +60,24 @@ export const updateUserSchema = z.object({
   /** Tanggal reset kuota cuti tahunan (bulan 1–12, tanggal 1–28). */
   quotaResetMonth: z.number().int().min(1, 'Bulan reset 1–12').max(12, 'Bulan reset 1–12').optional(),
   quotaResetDay: z.number().int().min(1, 'Tanggal reset 1–28').max(28, 'Tanggal reset 1–28').optional(),
+  /** NON_SHIFT (default) atau SHIFT. SHIFT wajib punya pola roster + tanggal mulai. */
+  workType: z.enum(['NON_SHIFT', 'SHIFT']).optional(),
+  /** Pola roster: K = kerja, L = libur, 2–28 hari, mis. "KKKKLL". */
+  rosterPattern: z
+    .string()
+    .trim()
+    .toUpperCase()
+    .regex(/^[KL]{2,28}$/, 'Pola roster hanya huruf K/L, 2–28 hari')
+    .refine((v) => v.includes('K'), 'Pola roster minimal punya satu hari kerja')
+    .optional()
+    .nullable()
+    .or(z.literal('')),
+  rosterStartDate: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/, 'Tanggal mulai roster tidak valid')
+    .optional()
+    .nullable()
+    .or(z.literal('')),
 });
 
 export type CreateUserInput = z.infer<typeof createUserSchema>;

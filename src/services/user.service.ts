@@ -4,6 +4,36 @@ import { Prisma, QuotaHistoryType } from '@prisma/client';
 import { CreateUserInput, UpdateUserInput } from '@/schemas/user.schema';
 import { ensureUserLeaveQuotas } from '@/services/quota.service';
 import { currentPeriodYear, normalizeRule } from '@/lib/quota-period';
+import { isValidRosterPattern } from '@/lib/roster';
+
+/**
+ * Normalisasi setelan kerja. SHIFT wajib punya pola roster valid + tanggal mulai;
+ * NON_SHIFT mengosongkan data roster.
+ */
+function resolveWorkSettings(
+  input: { workType?: 'NON_SHIFT' | 'SHIFT'; rosterPattern?: string | null; rosterStartDate?: string | null },
+  current?: { workType: 'NON_SHIFT' | 'SHIFT'; rosterPattern: string | null; rosterStartDate: Date | null }
+): { workType: 'NON_SHIFT' | 'SHIFT'; rosterPattern: string | null; rosterStartDate: Date | null } | null {
+  if (input.workType === undefined && input.rosterPattern === undefined && input.rosterStartDate === undefined) {
+    return null;
+  }
+  const workType = input.workType ?? current?.workType ?? 'NON_SHIFT';
+  if (workType === 'NON_SHIFT') return { workType, rosterPattern: null, rosterStartDate: null };
+
+  const pattern =
+    input.rosterPattern !== undefined
+      ? input.rosterPattern?.trim().toUpperCase() || null
+      : current?.rosterPattern ?? null;
+  const start =
+    input.rosterStartDate !== undefined
+      ? input.rosterStartDate
+        ? new Date(input.rosterStartDate)
+        : null
+      : current?.rosterStartDate ?? null;
+  if (!isValidRosterPattern(pattern)) throw new Error('Karyawan shift wajib punya pola roster kerja');
+  if (!start || isNaN(start.getTime())) throw new Error('Karyawan shift wajib punya tanggal mulai roster');
+  return { workType, rosterPattern: pattern, rosterStartDate: start };
+}
 
 /** Date → 'YYYY-MM-DD' (tanggal tersimpan sebagai tengah malam UTC). */
 function toDateOnly(date: Date | null): string | null {
@@ -29,6 +59,9 @@ const publicUserSelect = {
   joinDate: true,
   quotaResetMonth: true,
   quotaResetDay: true,
+  workType: true,
+  rosterPattern: true,
+  rosterStartDate: true,
   createdAt: true,
   updatedAt: true,
   deletedAt: true,
@@ -61,6 +94,9 @@ export async function getAllUsers() {
     joinDate: toDateOnly(u.joinDate),
     quotaResetMonth: u.quotaResetMonth,
     quotaResetDay: u.quotaResetDay,
+    workType: u.workType,
+    rosterPattern: u.rosterPattern,
+    rosterStartDate: toDateOnly(u.rosterStartDate),
     totalQuota: u.quota?.totalQuota ?? 12,
     usedQuota: u.quota?.usedQuota ?? 0,
     remainingQuota: (u.quota?.totalQuota ?? 12) - (u.quota?.usedQuota ?? 0),
@@ -89,6 +125,9 @@ export async function getUserById(id: string) {
     joinDate: toDateOnly(user.joinDate),
     quotaResetMonth: user.quotaResetMonth,
     quotaResetDay: user.quotaResetDay,
+    workType: user.workType,
+    rosterPattern: user.rosterPattern,
+    rosterStartDate: toDateOnly(user.rosterStartDate),
     totalQuota: user.quota?.totalQuota ?? 12,
     usedQuota: user.quota?.usedQuota ?? 0,
     remainingQuota: (user.quota?.totalQuota ?? 12) - (user.quota?.usedQuota ?? 0),
@@ -130,6 +169,7 @@ export async function createUser(input: CreateUserInput) {
   const hashedPassword = await bcrypt.hash(input.password, 10);
   const rule = normalizeRule({ resetMonth: input.quotaResetMonth, resetDay: input.quotaResetDay });
   const periodYear = currentPeriodYear(rule);
+  const work = resolveWorkSettings(input) ?? { workType: 'NON_SHIFT' as const, rosterPattern: null, rosterStartDate: null };
 
   return prisma.$transaction(async (tx) => {
     const newUser = await tx.user.create({
@@ -146,6 +186,7 @@ export async function createUser(input: CreateUserInput) {
         quotaResetMonth: rule.resetMonth,
         quotaResetDay: rule.resetDay,
         lastQuotaResetYear: periodYear,
+        ...work,
         quota: {
           create: {
             totalQuota: input.totalQuota,
@@ -200,6 +241,8 @@ export async function updateUser(id: string, input: UpdateUserInput) {
   if (input.joinDate !== undefined) {
     dataToUpdate.joinDate = input.joinDate ? new Date(input.joinDate) : null;
   }
+  const work = resolveWorkSettings(input, user);
+  if (work) Object.assign(dataToUpdate, work);
 
   // Tanggal reset berubah → periode berjalan dihitung ulang dengan aturan baru dan
   // dianggap sudah di-reset, supaya cron tidak langsung me-reset di luar jadwal.
