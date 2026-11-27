@@ -6,7 +6,9 @@ import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { loginSchema, LoginInput } from '@/schemas/auth.schema';
 import { Building2, Lock, Mail, ArrowRight } from 'lucide-react';
+import Link from 'next/link';
 import { Button } from '@/components/ui/Button';
+import { AuthBackground } from '@/components/auth/AuthBackground';
 
 function LoginForm() {
   const router = useRouter();
@@ -59,7 +61,7 @@ function LoginForm() {
   };
 
   return (
-    <div className="w-full max-w-md bg-white rounded-2xl shadow-2xl border border-slate-200 p-8 relative z-10">
+    <div className="w-full max-w-md bg-white/95 backdrop-blur-xl rounded-2xl shadow-2xl shadow-indigo-950/50 border border-white/20 ring-1 ring-white/10 p-8">
       {/* Header Branding */}
       <div className="text-center mb-8">
         <div className="w-12 h-12 rounded-2xl bg-indigo-600 flex items-center justify-center text-white mx-auto mb-4 shadow-lg shadow-indigo-600/30">
@@ -104,6 +106,11 @@ function LoginForm() {
             />
           </div>
           {errors.password && <p className="mt-1 text-xs text-rose-600">{errors.password.message}</p>}
+          <div className="text-right mt-1.5">
+            <Link href="/forgot-password" className="text-xs text-indigo-600 hover:underline">
+              Lupa password?
+            </Link>
+          </div>
         </div>
 
         <Button type="submit" disabled={loading} className="w-full mt-2" size="lg">
@@ -117,11 +124,10 @@ function LoginForm() {
 
 export default function LoginPage() {
   return (
-    <div className="min-h-screen bg-slate-900 flex items-center justify-center p-4 relative overflow-hidden font-sans">
-      <div className="absolute top-1/4 left-1/2 -translate-x-1/2 w-96 h-96 bg-indigo-600/20 blur-3xl rounded-full pointer-events-none" />
+    <AuthBackground>
       <Suspense fallback={<div className="text-white text-xs">Loading...</div>}>
         <LoginForm />
       </Suspense>
-    </div>
+    </AuthBackground>
   );
 }

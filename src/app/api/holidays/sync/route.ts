@@ -10,7 +10,16 @@ export async function POST(request: Request) {
 
   try {
     const body = await request.json().catch(() => ({}));
-    const years = body.years || [2025, 2026];
+    const now = new Date().getFullYear();
+    const allowed = [now - 1, now, now + 1];
+    const requested: unknown[] = Array.isArray(body.years) ? body.years : allowed;
+    const years = requested.map(Number).filter((y) => allowed.includes(y));
+    if (years.length === 0) {
+      return NextResponse.json(
+        { success: false, message: `Tahun harus salah satu dari ${allowed.join(', ')}` },
+        { status: 400 }
+      );
+    }
 
     const totalSynced = await syncHolidaysFromApi(years);
 

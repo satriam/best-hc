@@ -6,6 +6,8 @@ import {
   deleteLeaveRequest,
 } from '@/services/leave.service';
 import { updateLeaveRequestPayloadSchema } from '@/schemas/leave.schema';
+import { prisma } from '@/lib/db';
+import { deleteTelegramMessage } from '@/lib/telegram';
 
 export async function GET(
   request: Request,
@@ -99,7 +101,11 @@ export async function DELETE(
   const { id } = await params;
 
   try {
+    const existing = await prisma.leaveRequest.findUnique({ where: { id }, select: { telegramMessageId: true } });
     await deleteLeaveRequest(id, session.id, session.role === 'ADMIN');
+    if (existing?.telegramMessageId) {
+      await deleteTelegramMessage(existing.telegramMessageId);
+    }
     return NextResponse.json({
       success: true,
       message: 'Pengajuan cuti berhasil dihapus',

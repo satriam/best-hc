@@ -3,6 +3,26 @@ import { prisma } from '@/lib/db';
 import { calculateLeaveDays } from '@/lib/calculation';
 import { getHolidayDatesSet } from '@/services/holiday.service';
 import { addDays, isSaturday, isSunday } from 'date-fns';
+import { getSession } from '@/lib/auth';
+import { countRosterWorkDays, toWorkRoster, type WorkRoster } from '@/lib/roster';
+
+/**
+ * Roster pemohon (karyawan SHIFT). `userId` di body hanya dipakai ADMIN
+ * (mis. saat mengedit pengajuan orang lain); selain itu user yang login.
+ */
+async function resolveRoster(bodyUserId: unknown): Promise<WorkRoster | null> {
+  const session = await getSession();
+  if (!session) return null;
+  const userId =
+    session.role === 'ADMIN' && typeof bodyUserId === 'string' && bodyUserId.length > 0
+      ? bodyUserId
+      : session.id;
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { workType: true, rosterPattern: true, rosterStartDate: true },
+  });
+  return toWorkRoster(user);
+}
 
 interface HolidayDetail {
   date: string;
@@ -37,15 +57,30 @@ function countWeekendDays(start: Date, end: Date): number {
   return weekendDaysCount;
 }
 
+/**
+ * Hari libur di rentang: SHIFT = hari libur roster (L), NON_SHIFT = Sabtu/Minggu.
+ * Nama field tetap `weekendDaysCount` demi kompatibilitas klien.
+ */
+function countOffDays(start: Date, end: Date, roster: WorkRoster | null): number {
+  if (!roster) return countWeekendDays(start, end);
+  const total = Math.round((end.getTime() - start.getTime()) / 86400000) + 1;
+  return Math.max(0, total - countRosterWorkDays(roster, start, end));
+}
+
+/** SHIFT: libur nasional tidak mengurangi hari cuti, jadi tidak ditampilkan. */
+async function holidaysFor(start: Date, end: Date, roster: WorkRoster | null) {
+  return roster ? [] : holidaysInRange(start, end);
+}
+
 const EMPTY = { success: true, totalDays: 0, holidaysInRange: [], weekendDaysCount: 0 };
 
 export async function POST(request: Request) {
   try {
     const text = await request.text();
     const body = text && text.trim().length > 0 ? JSON.parse(text) : {};
-    const { segments, leaveTypeIds, startDate, endDate } = body;
+    const { segments, leaveTypeIds, startDate, endDate, userId } = body;
 
-    const holidayDatesSet = await getHolidayDatesSet();
+    const [holidayDatesSet, roster] = await Promise.all([getHolidayDatesSet(), resolveRoster(userId)]);
 
     // ============ Bentuk BARU: segments[] (multi rentang, jenis per rentang) ============
     if (Array.isArray(segments) && segments.length > 0) {
@@ -123,13 +158,13 @@ export async function POST(request: Request) {
 
         // Hitung per segment memakai calculationType jenis cuti segment tersebut
         const totalDays = leaveType
-          ? calculateLeaveDays(start, end, [leaveType.calculationType], holidayDatesSet)
+          ? calculateLeaveDays(start, end, [leaveType.calculationType], holidayDatesSet, roster)
           : 0;
 
-        const segHolidays = await holidaysInRange(start, end);
+        const segHolidays = await holidaysFor(start, end, roster);
         segHolidays.forEach((h) => mergedHolidays.set(h.date, h.name));
 
-        const weekendDaysCount = countWeekendDays(start, end);
+        const weekendDaysCount = countOffDays(start, end, roster);
 
         grandTotal += totalDays;
         grandWeekend += weekendDaysCount;
@@ -156,6 +191,7 @@ export async function POST(request: Request) {
         segments: resultSegments,
         holidaysInRange: holidaysInRangeMerged,
         weekendDaysCount: grandWeekend,
+        workType: roster ? 'SHIFT' : 'NON_SHIFT',
       });
     }
 
@@ -183,13 +219,14 @@ export async function POST(request: Request) {
     });
 
     const calcTypes = leaveTypes.map((lt) => lt.calculationType);
-    const totalDays = calculateLeaveDays(start, end, calcTypes, holidayDatesSet);
+    const totalDays = calculateLeaveDays(start, end, calcTypes, holidayDatesSet, roster);
 
     return NextResponse.json({
       success: true,
       totalDays,
-      holidaysInRange: await holidaysInRange(start, end),
-      weekendDaysCount: countWeekendDays(start, end),
+      holidaysInRange: await holidaysFor(start, end, roster),
+      weekendDaysCount: countOffDays(start, end, roster),
+      workType: roster ? 'SHIFT' : 'NON_SHIFT',
     });
   } catch (error: any) {
     return NextResponse.json(

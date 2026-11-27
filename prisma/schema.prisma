@@ -38,6 +38,11 @@ enum LeaveStatus {
   DONE
 }
 
+enum WorkType {
+  NON_SHIFT
+  SHIFT
+}
+
 enum QuotaHistoryType {
   INITIAL_QUOTA
   LEAVE_APPROVED
@@ -57,6 +62,23 @@ model User {
   name            String
   email           String              @unique
   password        String
+  emailVerifiedAt DateTime?
+  /// Fitur menu yang tampil untuk USER (lihat src/lib/features.ts). ADMIN selalu semua.
+  features        String[]            @default(["CUTI", "SPKL"])
+  /// Tanggal masuk kerja (info; dipakai admin sebagai acuan tanggal reset kuota).
+  joinDate        DateTime?
+  /// Tanggal reset kuota cuti tahunan (bulan 1–12, tanggal 1–28). Default 1 Januari.
+  /// Periode kuota "tahun N" = tanggal reset tahun N s/d sehari sebelum tanggal reset tahun N+1.
+  quotaResetMonth Int                 @default(1)
+  quotaResetDay   Int                 @default(1)
+  /// Periode terakhir yang sudah di-reset (dipakai cron reset harian agar idempoten).
+  lastQuotaResetYear Int?
+  /// NON_SHIFT = libur Sabtu/Minggu + libur nasional. SHIFT = libur mengikuti pola roster.
+  workType        WorkType            @default(NON_SHIFT)
+  /// Pola roster berulang, satu huruf per hari: K = kerja, L = libur (mis. "KKKKLL").
+  rosterPattern   String?
+  /// Tanggal hari pertama pola roster (acuan perulangan).
+  rosterStartDate DateTime?
   role            Role                @default(USER)
   gender          Gender              @default(MALE)
   createdAt       DateTime            @default(now())
@@ -72,8 +94,28 @@ model User {
   spklItems       SpklItem[]
   signedDocuments SignedDocument[]
   cutiSignerLinks CutiSignerUser[]
+  passwordResets  PasswordResetToken[]
+  emailVerifications EmailVerificationToken[]
+  impersonationsAsAdmin  ImpersonationLog[] @relation("ImpersonationAdmin")
+  impersonationsAsTarget ImpersonationLog[] @relation("ImpersonationTarget")
 
   @@map("users")
+}
+
+/// Jejak audit setiap kali admin masuk sebagai user lain ("login as user").
+model ImpersonationLog {
+  id        String    @id @default(uuid())
+  adminId   String
+  targetId  String
+  startedAt DateTime  @default(now())
+  endedAt   DateTime?
+
+  admin  User @relation("ImpersonationAdmin", fields: [adminId], references: [id], onDelete: Cascade)
+  target User @relation("ImpersonationTarget", fields: [targetId], references: [id], onDelete: Cascade)
+
+  @@index([adminId, startedAt])
+  @@index([targetId, startedAt])
+  @@map("impersonation_logs")
 }
 
 model LeaveQuota {
@@ -135,6 +177,8 @@ model LeaveRequest {
   attachmentUrl  String?
   status         LeaveStatus        @default(ON_PROGRESS)
   adminNote      String?
+  /// ID pesan notifikasi Telegram (channel) untuk pengajuan ini; dihapus saat CANCELLED.
+  telegramMessageId Int?
   createdAt      DateTime           @default(now())
   updatedAt      DateTime           @updatedAt
   deletedAt      DateTime?
@@ -337,6 +381,8 @@ model Spkl {
   approvedAt   DateTime?
   approvedById String?
   rejectedNote String?
+  /// ID pesan notifikasi Telegram (channel) untuk SPKL ini; dihapus saat CANCELLED.
+  telegramMessageId Int?
   createdAt    DateTime   @default(now())
   updatedAt    DateTime   @updatedAt
   deletedAt    DateTime?
@@ -408,4 +454,116 @@ model SignedDocument {
 
   @@index([entityType, entityId, isActive])
   @@map("signed_documents")
+}
+
+// ---------------------------------------------------------------------------
+// Laporan bulanan (generate .docx dari template contoh + arsip ke Google Drive)
+// ---------------------------------------------------------------------------
+
+enum LaporanSignerRole {
+  DIBUAT // Dibuat Oleh
+  DIPERIKSA // Diperiksa Oleh
+  DISETUJUI // Disetujui Oleh (boleh lebih dari satu baris: Direktur + Dept Head)
+}
+
+/// Master penanda tangan lembar persetujuan laporan bulanan.
+model LaporanSigner {
+  id         String             @id @default(uuid())
+  role       LaporanSignerRole
+  name       String
+  nip        String?
+  position   String?
+  department String?
+  isActive   Boolean            @default(true)
+  isDefault  Boolean            @default(false)
+  sortOrder  Int                @default(0)
+  createdAt  DateTime           @default(now())
+  updatedAt  DateTime           @updatedAt
+
+  @@index([role, isActive])
+  @@map("laporan_signers")
+}
+
+/// Satu dokumen laporan bulanan. `meta` menyimpan payload lengkap (termasuk
+/// gambar lampiran sebagai data URL) supaya file bisa di-generate ulang saat
+/// diarsipkan ke Drive tanpa menunggu upload ulang dari browser.
+model LaporanBulanan {
+  id           String   @id @default(uuid())
+  period       String // "2026-09"
+  projectName  String
+  docNo        String?
+  title        String
+  version      String   @default("1.0")
+  status       String   @default("draft") // draft | selesai
+  itemCount    Int      @default(0)
+  meta         Json?
+  driveFileId  String?
+  driveLink    String?
+  /// `true` = dokumen .docx dibuat ulang setelah arsip Drive terakhir.
+  needsDriveSync Boolean @default(false)
+  createdById  String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@unique([period, projectName, version])
+  @@index([period, status])
+  @@map("laporan_bulanan")
+}
+
+/// Default isian laporan bulanan — selalu satu baris (`id = "default"`).
+/// Dipakai wizard untuk prefill: proyek, judul cover, judul dokumen, nomor
+/// dokumen/SPPH, versi, dan pilihan penanda tangan. `PUT /api/laporan/defaults`
+/// dipanggil otomatis setelah generate supaya periode berikutnya tidak mengetik ulang.
+model LaporanDefault {
+  id                 String   @id @default("default")
+  projectName        String   @default("")
+  coverTitle         String   @default("")
+  docTitle           String   @default("")
+  docNo              String?
+  spphNo             String?
+  version            String   @default("1.0")
+  dibuatSignerId     String?
+  diperiksaSignerId  String?
+  disetujuiSignerId  String?
+  /// Slot kedua blok "Disetujui Oleh" (mis. Dept Head) — opsional.
+  disetujui2SignerId String?
+  updatedById        String?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  @@map("laporan_defaults")
+}
+
+/// Token reset password sekali pakai. Hanya hash SHA-256 yang disimpan.
+model PasswordResetToken {
+  id        String    @id @default(uuid())
+  userId    String
+  tokenHash String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  ip        String?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([ip, createdAt])
+  @@map("password_reset_tokens")
+}
+
+/// Token verifikasi email / konfirmasi ganti email. `email` = alamat tujuan
+/// (sama dengan email user saat ini = verifikasi; beda = ganti email).
+model EmailVerificationToken {
+  id        String    @id @default(uuid())
+  userId    String
+  email     String
+  tokenHash String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@map("email_verification_tokens")
 }

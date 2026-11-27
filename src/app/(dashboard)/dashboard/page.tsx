@@ -6,11 +6,51 @@ import { Card } from '@/components/ui/Card';
 import { Button } from '@/components/ui/Button';
 import { StatusBadge } from '@/components/ui/Badge';
 import { formatDate } from '@/lib/utils';
+import { getUserFeatures } from '@/services/feature.service';
+import { FEATURES } from '@/lib/features';
+import { prisma } from '@/lib/db';
 import { CalendarPlus, CalendarCheck, Clock, CheckCircle2, ArrowUpRight } from 'lucide-react';
 
 export default async function UserDashboardPage() {
   const session = await getSession();
   if (!session) return null;
+
+  const features = await getUserFeatures(session.id);
+  if (!features.includes('CUTI')) {
+    const me = await prisma.user.findUnique({ where: { id: session.id }, select: { name: true } });
+    const enabled = FEATURES.filter((f) => features.includes(f.key));
+    return (
+      <div className="space-y-6">
+        <div>
+          <h1 className="text-2xl font-extrabold text-slate-900 tracking-tight">
+            Selamat datang, {me?.name ?? session.name}
+          </h1>
+          <p className="text-xs text-slate-500 mt-1">Pilih menu yang tersedia untuk akun Anda.</p>
+        </div>
+        {enabled.length === 0 ? (
+          <Card className="text-sm text-slate-500">
+            Belum ada fitur yang diaktifkan untuk akun Anda. Hubungi admin.
+          </Card>
+        ) : (
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5">
+            {enabled.map((f) => (
+              <Link key={f.key} href={f.paths[0]}>
+                <Card className="hover:border-indigo-300 hover:shadow-md">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <h3 className="text-base font-bold text-slate-900">{f.label}</h3>
+                      <p className="text-xs text-slate-500 mt-1">{f.description}</p>
+                    </div>
+                    <ArrowUpRight className="w-5 h-5 text-indigo-600" />
+                  </div>
+                </Card>
+              </Link>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  }
 
   // Statistik kuota dan daftar pengajuan tidak saling bergantung → satu wave paralel.
   const [stats, requests] = await Promise.all([

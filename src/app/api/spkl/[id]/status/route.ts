@@ -3,6 +3,8 @@ import { getSession } from '@/lib/auth';
 import { updateSpklStatus } from '@/services/spkl.service';
 import { updateSpklStatusSchema } from '@/schemas/spkl.schema';
 import { normalizeError } from '@/lib/api-error';
+import { prisma } from '@/lib/db';
+import { deleteTelegramMessage } from '@/lib/telegram';
 
 function errorStatus(message: string): number {
   if (/forbidden/i.test(message)) return 403;
@@ -27,7 +29,13 @@ export async function PATCH(
     const body = text && text.trim().length > 0 ? JSON.parse(text) : {};
     const validated = updateSpklStatusSchema.parse(body);
 
+    const existing = await prisma.spkl.findUnique({ where: { id }, select: { telegramMessageId: true } });
     const data = await updateSpklStatus(id, { id: session.id, role: session.role }, validated);
+
+    // SPKL dibatalkan → hapus pesan notifikasi di channel Telegram.
+    if (validated.status === 'CANCELLED' && existing?.telegramMessageId) {
+      await deleteTelegramMessage(existing.telegramMessageId);
+    }
 
     return NextResponse.json({
       success: true,

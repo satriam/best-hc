@@ -53,6 +53,8 @@ export default function EditLeaveRequestPage({
   const [calculatedDays, setCalculatedDays] = useState<number>(0);
   const [holidaysInRange, setHolidaysInRange] = useState<HolidayDetail[]>([]);
   const [weekendDaysCount, setWeekendDaysCount] = useState<number>(0);
+  /** Pemilik pengajuan: roster SHIFT-nya dipakai saat menghitung hari. */
+  const [ownerId, setOwnerId] = useState<string>('');
 
   const [submitting, setSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -111,6 +113,7 @@ export default function EditLeaveRequestPage({
         }
 
         const existing = jsonDetail.data;
+        setOwnerId(existing.user?.id ?? existing.userId ?? '');
 
         if (existing.status === 'DONE' || existing.status === 'CANCELLED') {
           throw new Error('Pengajuan cuti yang telah berstatus DONE (Selesai) atau CANCELLED tidak dapat diubah lagi.');
@@ -201,6 +204,7 @@ export default function EditLeaveRequestPage({
             leaveTypeIds: selectedTypeIds,
             startDate,
             endDate,
+            ...(ownerId ? { userId: ownerId } : {}),
           }),
         });
 
@@ -216,7 +220,7 @@ export default function EditLeaveRequestPage({
     }
 
     calculateDays();
-  }, [selectedTypeIds, startDate, endDate]);
+  }, [selectedTypeIds, startDate, endDate, ownerId]);
 
   const handleSelectLeaveType = (typeId: string) => {
     const selectedType = leaveTypes.find((t) => t.id === typeId);

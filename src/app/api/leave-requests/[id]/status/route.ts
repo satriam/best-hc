@@ -1,7 +1,9 @@
 import { NextResponse } from 'next/server';
 import { getSession } from '@/lib/auth';
 import { updateLeaveStatus } from '@/services/leave.service';
+import { prisma } from '@/lib/db';
 import { updateLeaveStatusSchema } from '@/schemas/leave.schema';
+import { deleteTelegramMessage } from '@/lib/telegram';
 
 export async function PATCH(
   request: Request,
@@ -19,12 +21,32 @@ export async function PATCH(
     const body = text && text.trim().length > 0 ? JSON.parse(text) : {};
     const validated = updateLeaveStatusSchema.parse(body);
 
+    // Undone (DONE → ON_PROGRESS, kuota dikembalikan) hanya untuk ADMIN.
+    const current = await prisma.leaveRequest.findUnique({
+      where: { id },
+      select: { status: true, telegramMessageId: true },
+    });
+    if (current?.status === 'DONE' && session.role !== 'ADMIN') {
+      return NextResponse.json(
+        { success: false, message: 'Hanya admin yang bisa meng-undone pengajuan DONE' },
+        { status: 403 }
+      );
+    }
+
     // Allow status updates for all users
     const updated = await updateLeaveStatus(id, validated.status, validated.adminNote);
 
+    // Pengajuan dibatalkan → hapus pesan notifikasi di channel Telegram.
+    if (validated.status === 'CANCELLED' && current?.telegramMessageId) {
+      await deleteTelegramMessage(current.telegramMessageId);
+    }
+
     return NextResponse.json({
       success: true,
-      message: `Status pengajuan berhasil diubah menjadi ${validated.status}`,
+      message:
+        current?.status === 'DONE'
+          ? 'Pengajuan di-undone. Status kembali Menunggu Persetujuan dan kuota dikembalikan.'
+          : `Status pengajuan berhasil diubah menjadi ${validated.status}`,
       data: updated,
     });
   } catch (error: any) {

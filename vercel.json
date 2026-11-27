@@ -3,11 +3,19 @@
   "framework": "nextjs",
   "buildCommand": "prisma generate && prisma migrate deploy && next build",
   "installCommand": "npm install",
-  "regions": ["sin1"],
+  "regions": [
+    "sin1"
+  ],
   "git": {
     "deploymentEnabled": {
       "master": true,
       "development": true
     }
-  }
+  },
+  "crons": [
+    {
+      "path": "/api/cron/quota-reset",
+      "schedule": "5 17 * * *"
+    }
+  ]
 }

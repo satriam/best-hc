@@ -45,3 +45,40 @@ body {
 .custom-scrollbar::-webkit-scrollbar-thumb:hover {
   background: #475569;
 }
+
+/* ===== Latar animasi halaman auth (login, lupa/reset password, verifikasi) ===== */
+@keyframes auth-blob {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  33% { transform: translate(6vw, -5vh) scale(1.12); }
+  66% { transform: translate(-5vw, 4vh) scale(0.92); }
+}
+@keyframes auth-grid {
+  from { background-position: 0 0; }
+  to { background-position: 48px 48px; }
+}
+@keyframes auth-rise {
+  0% { transform: translateY(0); opacity: 0; }
+  10% { opacity: 0.8; }
+  90% { opacity: 0.8; }
+  100% { transform: translateY(-110vh); opacity: 0; }
+}
+@keyframes auth-card-in {
+  from { opacity: 0; transform: translateY(16px) scale(0.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+.auth-blob { animation: auth-blob 18s ease-in-out infinite; }
+.auth-grid {
+  background-image:
+    linear-gradient(rgba(148, 163, 184, 0.07) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(148, 163, 184, 0.07) 1px, transparent 1px);
+  background-size: 48px 48px;
+  animation: auth-grid 6s linear infinite;
+  mask-image: radial-gradient(ellipse at center, black 30%, transparent 75%);
+}
+.auth-particle { animation: auth-rise linear infinite; }
+.auth-card { animation: auth-card-in 500ms ease-out both; }
+
+@media (prefers-reduced-motion: reduce) {
+  .auth-blob, .auth-grid, .auth-particle, .auth-card { animation: none; }
+  .auth-particle { display: none; }
+}

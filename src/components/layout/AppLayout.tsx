@@ -12,9 +12,13 @@ interface AppLayoutProps {
     email: string;
     role: 'ADMIN' | 'USER';
   };
+  /** Fitur USER yang aktif; dipakai Sidebar. */
+  features?: string[];
+  /** Nama admin asli bila sesi ini sedang "login as user". */
+  impersonatedBy?: string;
 }
 
-export const AppLayout: React.FC<AppLayoutProps> = ({ children, user }) => {
+export const AppLayout: React.FC<AppLayoutProps> = ({ children, user, features, impersonatedBy }) => {
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
 
   const openMobileNav = useCallback(() => setMobileNavOpen(true), []);
@@ -26,6 +30,7 @@ export const AppLayout: React.FC<AppLayoutProps> = ({ children, user }) => {
         userRole={user.role}
         userName={user.name}
         userEmail={user.email}
+        features={features}
         mobileOpen={mobileNavOpen}
         onClose={closeMobileNav}
       />
@@ -40,6 +45,7 @@ export const AppLayout: React.FC<AppLayoutProps> = ({ children, user }) => {
           userRole={user.role}
           onMenuClick={openMobileNav}
           mobileNavOpen={mobileNavOpen}
+          impersonatedBy={impersonatedBy}
         />
         <main className="flex-1 p-4 md:p-8 w-full min-w-0">{children}</main>
       </div>

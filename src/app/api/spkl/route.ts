@@ -5,6 +5,9 @@ import { createSpkl, getSpkls } from '@/services/spkl.service';
 import { getSignerIdsForUser } from '@/services/spkl-signer.service';
 import { createSpklSchema } from '@/schemas/spkl.schema';
 import { normalizeError } from '@/lib/api-error';
+import { featureForbidden } from '@/services/feature.service';
+import { notifySpklCreated } from '@/lib/telegram';
+import { prisma } from '@/lib/db';
 
 function parseEnumValue<T extends Record<string, string>>(enumObject: T, value: string | null): T[keyof T] | undefined {
   if (!value) return undefined;
@@ -55,6 +58,9 @@ export async function POST(request: Request) {
     return NextResponse.json({ success: false, message: 'Unauthorized' }, { status: 401 });
   }
 
+  const denied = await featureForbidden(session, 'SPKL');
+  if (denied) return denied;
+
   const { searchParams } = new URL(request.url);
   // `?strict=1` menjadikan peringatan PP 35/2021 mingguan/bulanan sebagai error (khusus ADMIN).
   const strict = searchParams.get('strict') === '1' && session.role === 'ADMIN';
@@ -64,14 +70,43 @@ export async function POST(request: Request) {
     const body = text && text.trim().length > 0 ? JSON.parse(text) : {};
     const validated = createSpklSchema.parse(body);
 
+    const requesterId = session.role === 'ADMIN' ? validated.userId : undefined;
+
     const { spkl, warnings } = await createSpkl(
       { id: session.id, role: session.role },
       validated,
       {
         strict,
-        requesterId: session.role === 'ADMIN' ? validated.userId : undefined,
+        requesterId,
       }
     );
+
+    // Hanya notifikasi bila benar-benar diajukan (bukan sekadar disimpan sebagai draft).
+    if (spkl.status === SpklStatus.ON_PROGRESS) {
+      const owner = await prisma.user.findUnique({
+        where: { id: requesterId ?? session.id },
+        select: { name: true, nip: true, position: true },
+      });
+      const telegramMessageId = await notifySpklCreated({
+        spklId: spkl.id,
+        employeeName: owner?.name ?? 'Karyawan',
+        nip: owner?.nip,
+        position: owner?.position,
+        number: spkl.number,
+        type: spkl.type,
+        workUnit: spkl.workUnit,
+        totalHours: Number(spkl.totalHours),
+        itemCount: spkl.items.length,
+        submittedAt: new Date().toLocaleString('id-ID', {
+          timeZone: 'Asia/Jakarta',
+          dateStyle: 'medium',
+          timeStyle: 'short',
+        }),
+      });
+      if (telegramMessageId) {
+        await prisma.spkl.update({ where: { id: spkl.id }, data: { telegramMessageId } });
+      }
+    }
 
     return NextResponse.json({
       success: true,

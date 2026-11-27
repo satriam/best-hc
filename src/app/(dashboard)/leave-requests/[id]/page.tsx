@@ -28,6 +28,7 @@ import {
   Mail,
   Shield,
   Upload,
+  RotateCcw,
 } from 'lucide-react';
 import Link from 'next/link';
 
@@ -147,12 +148,14 @@ export default function LeaveRequestDetailPage({
       position: string | null;
       isDefault: boolean;
       sortOrder: number;
+      /** User yang terhubung ke penanda tangan ini. */
+      userIdList: string[];
     }>
   >([]);
 
   // Status Action Modal State
   const [statusModalOpen, setStatusModalOpen] = useState(false);
-  const [targetStatus, setTargetStatus] = useState<'APPROVED' | 'REJECTED' | 'CANCELLED' | 'DONE'>('DONE');
+  const [targetStatus, setTargetStatus] = useState<'APPROVED' | 'REJECTED' | 'CANCELLED' | 'DONE' | 'ON_PROGRESS'>('DONE');
   const [adminNote, setAdminNote] = useState('');
   const [submittingStatus, setSubmittingStatus] = useState(false);
 
@@ -256,6 +259,7 @@ export default function LeaveRequestDetailPage({
               position?: string | null;
               isDefault?: boolean;
               sortOrder?: number;
+              userIdList?: string[];
             }) => ({
               role: signer.role,
               name: signer.name,
@@ -263,6 +267,7 @@ export default function LeaveRequestDetailPage({
               position: signer.position ?? null,
               isDefault: signer.isDefault ?? false,
               sortOrder: signer.sortOrder ?? 0,
+              userIdList: Array.isArray(signer.userIdList) ? signer.userIdList : [],
             }))
         );
       }
@@ -339,7 +344,10 @@ export default function LeaveRequestDetailPage({
           const resCalc = await fetch('/api/leave-requests/calculate', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(calcPayload),
+            body: JSON.stringify({
+              ...calcPayload,
+              userId: jsonReq.data.user?.id ?? jsonReq.data.userId,
+            }),
           });
           const jsonCalc = await safeParseJson(resCalc);
           if (jsonCalc.success) {
@@ -661,6 +669,21 @@ export default function LeaveRequestDetailPage({
                 className="bg-blue-600 hover:bg-blue-700 text-white font-bold"
               >
                 <CheckCircle2 className="w-4 h-4" /> Tandai Selesai (DONE)
+              </Button>
+            )}
+
+            {/* 2b. Undone (khusus admin): DONE → Menunggu Persetujuan, kuota dikembalikan */}
+            {requestDetail.status === 'DONE' && currentUserRole === 'ADMIN' && (
+              <Button
+                onClick={() => {
+                  setTargetStatus('ON_PROGRESS');
+                  setStatusModalOpen(true);
+                }}
+                variant="outline"
+                size="sm"
+                className="border-amber-300 text-amber-800 bg-amber-50 hover:bg-amber-100 font-bold"
+              >
+                <RotateCcw className="w-4 h-4" /> Undone
               </Button>
             )}
 
@@ -1169,8 +1192,10 @@ export default function LeaveRequestDetailPage({
           const esc = (s: string) => (s || '').replace(/[&<>"']/g, m => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[m] as string));
 
           // ---- Blok tanda tangan: ambil dari Master Penanda Tangan Cuti ----
-          // Default per role menang; kalau belum ada default, pakai baris aktif pertama.
+          // Urutan: penanda tangan yang TERHUBUNG ke pemohon → default role → baris aktif pertama.
+          const ownerId = requestDetail.userId;
           const pickSigner = (role: 'KNOWING' | 'APPROVER') =>
+            cutiSigners.find((s) => s.role === role && s.userIdList.includes(ownerId)) ??
             cutiSigners.find((s) => s.role === role && s.isDefault) ??
             cutiSigners.find((s) => s.role === role) ??
             null;
@@ -1229,28 +1254,18 @@ export default function LeaveRequestDetailPage({
                   ranges: [{ startDate: startDateStr, endDate: endDateStr }],
                 }));
 
-          const rangeText = (r: { startDate: string; endDate: string }) =>
-            `${formatDate(r.startDate)} - ${formatDate(r.endDate)}`;
-
           /**
-           * Tanda x + tanggal pelaksanaan untuk satu baris jenis cuti.
-           * Bila satu jenis dipakai di beberapa rentang, semua rentang ditulis dalam satu sel
-           * (mis. "01/10/2026 - 03/10/2026; 10/10/2026 - 11/10/2026").
+           * Tanda x + daftar rentang tanggal untuk satu baris jenis cuti.
+           * Tiap rentang jadi satu baris Mulai/Sampai sendiri (urut tanggal mulai);
+           * kolom x dan nama jenis cuti di-merge (rowspan) dari baris pertama.
            */
           const dateCells = (predicate: (name: string) => boolean) => {
             const ranges = usedTypes
               .filter((t) => predicate(t.name.toLowerCase()))
-              .flatMap((t) => t.ranges);
-            if (ranges.length === 0) return { mark: '', mulai: '', sampai: '', combined: '' };
-            if (ranges.length === 1) {
-              return {
-                mark: 'x',
-                mulai: formatDate(ranges[0].startDate),
-                sampai: formatDate(ranges[0].endDate),
-                combined: '',
-              };
-            }
-            return { mark: 'x', mulai: '', sampai: '', combined: ranges.map(rangeText).join('; ') };
+              .flatMap((t) => t.ranges)
+              .sort((a, b) => a.startDate.localeCompare(b.startDate))
+              .map((r) => ({ mulai: formatDate(r.startDate), sampai: formatDate(r.endDate) }));
+            return { mark: ranges.length > 0 ? 'x' : '', ranges };
           };
 
           const inc = (match: string) => (name: string) => name.includes(match);
@@ -1285,11 +1300,25 @@ export default function LeaveRequestDetailPage({
           const dCell = `${c}width:105px;text-align:center;padding:2px;font-size:9px;vertical-align:middle;`;
           const mCell = `${c}width:105px;padding:3px;text-align:center;font-size:10px;background-color:#002060;color:#fff;font-weight:bold;-webkit-print-color-adjust:exact;print-color-adjust:exact;vertical-align:middle;`;
 
-          // Baris tabel: satu sel tanggal bila hanya 1 rentang, sel gabungan (colspan) bila beberapa rentang.
-          const rowHtml = (r: { mark: string; label: string; mulai: string; sampai: string; combined: string }) =>
-            r.combined
-              ? `<tr style="height:20px"><td style="${xCell}">${r.mark || '&nbsp;'}</td><td style="${tCell}">${r.label}</td><td colspan="2" style="${dCell}width:auto">${r.combined}</td></tr>`
-              : `<tr style="height:20px"><td style="${xCell}">${r.mark || '&nbsp;'}</td><td style="${tCell}">${r.label}</td><td style="${dCell}">${r.mulai || '&nbsp;'}</td><td style="${dCell}">${r.sampai || '&nbsp;'}</td></tr>`;
+          // Satu baris per rentang tanggal. Kolom x & jenis cuti di-merge (rowspan) bila
+          // jenis yang sama punya beberapa rentang.
+          const rowHtml = (r: {
+            mark: string;
+            label: string;
+            ranges: Array<{ mulai: string; sampai: string }>;
+          }) => {
+            const ranges = r.ranges.length > 0 ? r.ranges : [{ mulai: '', sampai: '' }];
+            const span = ranges.length > 1 ? ` rowspan="${ranges.length}"` : '';
+            return ranges
+              .map((range, i) => {
+                const lead =
+                  i === 0
+                    ? `<td${span} style="${xCell}">${r.mark || '&nbsp;'}</td><td${span} style="${tCell}">${r.label}</td>`
+                    : '';
+                return `<tr style="height:20px">${lead}<td style="${dCell}">${range.mulai || '&nbsp;'}</td><td style="${dCell}">${range.sampai || '&nbsp;'}</td></tr>`;
+              })
+              .join('');
+          };
 
           const cutiRowsHtml = cutiRows.map(rowHtml).join('');
           const izinRowsHtml = izinRows.map(rowHtml).join('');
@@ -1466,6 +1495,8 @@ export default function LeaveRequestDetailPage({
         title={
           targetStatus === 'DONE'
             ? '🔵 Tandai Pengajuan Selesai (DONE)'
+            : targetStatus === 'ON_PROGRESS'
+            ? '↩️ Undone Pengajuan Selesai'
             : targetStatus === 'APPROVED'
             ? '✅ Setujui Pengajuan Cuti'
             : targetStatus === 'REJECTED'
@@ -1475,10 +1506,17 @@ export default function LeaveRequestDetailPage({
         description="Pembaruan status pengajuan cuti"
       >
         <div className="space-y-4 text-xs">
-          <p className="font-semibold text-slate-700">
-            Apakah Anda yakin ingin mengubah status pengajuan cuti ini menjadi{' '}
-            <strong className="text-indigo-950 uppercase font-black">{targetStatus}</strong>?
-          </p>
+          {targetStatus === 'ON_PROGRESS' ? (
+            <p className="font-semibold text-slate-700">
+              Status akan kembali ke <strong className="text-indigo-950 font-black">Menunggu Persetujuan</strong> dan
+              kuota cuti yang terpotong dikembalikan. Lanjutkan?
+            </p>
+          ) : (
+            <p className="font-semibold text-slate-700">
+              Apakah Anda yakin ingin mengubah status pengajuan cuti ini menjadi{' '}
+              <strong className="text-indigo-950 uppercase font-black">{targetStatus}</strong>?
+            </p>
+          )}
 
           <div>
             <label className="block font-bold text-slate-700 mb-1">Catatan (Opsional)</label>
@@ -1502,6 +1540,8 @@ export default function LeaveRequestDetailPage({
               className={
                 targetStatus === 'DONE'
                   ? 'bg-blue-600 hover:bg-blue-700 text-white font-bold'
+                  : targetStatus === 'ON_PROGRESS'
+                  ? 'bg-amber-600 hover:bg-amber-700 text-white font-bold'
                   : targetStatus === 'APPROVED'
                   ? 'bg-emerald-600 hover:bg-emerald-700 text-white'
                   : 'bg-rose-600 hover:bg-rose-700 text-white'

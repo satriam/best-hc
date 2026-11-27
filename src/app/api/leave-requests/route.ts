@@ -3,6 +3,10 @@ import { getSession } from '@/lib/auth';
 import { getLeaveRequests, createLeaveRequest } from '@/services/leave.service';
 import { createLeaveRequestPayloadSchema } from '@/schemas/leave.schema';
 import { LeaveStatus } from '@prisma/client';
+import { featureForbidden } from '@/services/feature.service';
+import { prisma } from '@/lib/db';
+import { formatDateId } from '@/schemas/leave.schema';
+import { notifyLeaveCreated } from '@/lib/telegram';
 
 export async function GET(request: Request) {
   const session = await getSession();
@@ -38,6 +42,9 @@ export async function POST(request: Request) {
     return NextResponse.json({ success: false, message: 'Unauthorized' }, { status: 401 });
   }
 
+  const denied = await featureForbidden(session, 'CUTI');
+  if (denied) return denied;
+
   try {
     const text = await request.text();
     const body = text && text.trim().length > 0 ? JSON.parse(text) : {};
@@ -49,6 +56,31 @@ export async function POST(request: Request) {
       session.role === 'ADMIN' && validatedData.userId ? validatedData.userId : session.id;
 
     const result = await createLeaveRequest(targetUserId, validatedData);
+
+    const owner = await prisma.user.findUnique({
+      where: { id: targetUserId },
+      select: { name: true, nip: true, position: true, workUnit: true },
+    });
+    const telegramMessageId = await notifyLeaveCreated({
+      requestId: result.id,
+      employeeName: owner?.name ?? 'Karyawan',
+      nip: owner?.nip,
+      position: owner?.position,
+      workUnit: owner?.workUnit,
+      leaveTypeNames: result.requestTypes.map((rt) => rt.leaveType.name),
+      startDate: formatDateId(result.startDate),
+      endDate: formatDateId(result.endDate),
+      totalDays: result.totalDays,
+      reason: result.reason,
+      submittedAt: new Date().toLocaleString('id-ID', {
+        timeZone: 'Asia/Jakarta',
+        dateStyle: 'medium',
+        timeStyle: 'short',
+      }),
+    });
+    if (telegramMessageId) {
+      await prisma.leaveRequest.update({ where: { id: result.id }, data: { telegramMessageId } });
+    }
 
     return NextResponse.json({
       success: true,

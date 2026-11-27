@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { getSession } from '@/lib/auth';
-import { isApiError, normalizeError } from '@/lib/api-error';
+import { isApiError, isZodError, normalizeError, normalizeZodError } from '@/lib/api-error';
 import { quotaSyncSchema } from '@/schemas/quota.schema';
 import { syncUserQuotasBulk } from '@/services/quota.service';
 
@@ -44,6 +44,15 @@ export async function POST(request: Request) {
       return NextResponse.json(
         { success: false, message: error.message, errors: error.details },
         { status: error.status }
+      );
+    }
+
+    // Body tidak sesuai skema → 422 (validasi), bukan 400.
+    if (isZodError(error)) {
+      const { message, issues } = normalizeZodError(error, 'Gagal menyinkronkan kuota');
+      return NextResponse.json(
+        { success: false, message, errors: issues },
+        { status: 422 }
       );
     }
 

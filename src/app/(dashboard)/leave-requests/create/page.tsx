@@ -93,7 +93,9 @@ interface CalcResult {
   totalDays: number;
   segments: CalcSegment[];
   holidaysInRange: HolidayDetail[];
+  /** NON_SHIFT: hari Sabtu/Minggu. SHIFT: hari libur roster. */
   weekendDaysCount: number;
+  workType: 'SHIFT' | 'NON_SHIFT';
 }
 
 const EMPTY_CALC: CalcResult = {
@@ -101,6 +103,7 @@ const EMPTY_CALC: CalcResult = {
   segments: [],
   holidaysInRange: [],
   weekendDaysCount: 0,
+  workType: 'NON_SHIFT',
 };
 
 const formSchema = z.object({
@@ -375,6 +378,7 @@ export default function CreateLeaveRequestPage() {
               startDate: s.startDate,
               endDate: s.endDate,
             })),
+            ...(isAdmin && selectedUserId ? { userId: selectedUserId } : {}),
           }),
         });
 
@@ -385,6 +389,7 @@ export default function CreateLeaveRequestPage() {
             segments: Array.isArray(json.segments) ? json.segments : [],
             holidaysInRange: Array.isArray(json.holidaysInRange) ? json.holidaysInRange : [],
             weekendDaysCount: json.weekendDaysCount ?? 0,
+            workType: json.workType === 'SHIFT' ? 'SHIFT' : 'NON_SHIFT',
           });
         }
       } catch (err) {
@@ -398,7 +403,7 @@ export default function CreateLeaveRequestPage() {
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [segments]);
+  }, [segments, isAdmin, selectedUserId]);
 
   const segCalc = (index: number): CalcSegment | undefined =>
     calc.segments.find((s) => s.index === index);
@@ -731,7 +736,8 @@ export default function CreateLeaveRequestPage() {
                             <span className="hidden sm:inline text-[11px] font-semibold text-slate-500">
                               {holidaysCount > 0 && `${holidaysCount} libur nasional`}
                               {holidaysCount > 0 && weekendCount > 0 && ' · '}
-                              {weekendCount > 0 && `${weekendCount} akhir pekan`}
+                              {weekendCount > 0 &&
+                                `${weekendCount} ${calc.workType === 'SHIFT' ? 'libur roster' : 'akhir pekan'}`}
                             </span>
                           )}
                           <button
@@ -956,14 +962,17 @@ export default function CreateLeaveRequestPage() {
                       <div className="flex items-center gap-2.5">
                         <span className="w-3 h-3 rounded-full bg-amber-600 shrink-0" />
                         <div>
-                          <span className="font-extrabold text-amber-950 text-sm">Akhir Pekan (Sabtu & Minggu)</span>
+                          <span className="font-extrabold text-amber-950 text-sm">
+                            {calc.workType === 'SHIFT' ? 'Libur Roster Shift' : 'Akhir Pekan (Sabtu & Minggu)'}
+                          </span>
                           <p className="text-xs font-bold text-amber-800">
-                            Terdeteksi {calc.weekendDaysCount} hari akhir pekan
+                            Terdeteksi {calc.weekendDaysCount} hari{' '}
+                            {calc.workType === 'SHIFT' ? 'libur roster (tidak memotong kuota)' : 'akhir pekan'}
                           </p>
                         </div>
                       </div>
                       <span className="px-2.5 py-1 rounded-md text-[11px] font-black bg-amber-600 text-white shadow-2xs">
-                        Libur Weekend
+                        {calc.workType === 'SHIFT' ? 'Libur Roster' : 'Libur Weekend'}
                       </span>
                     </div>
                   )}

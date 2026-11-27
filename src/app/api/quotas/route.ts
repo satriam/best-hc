@@ -11,9 +11,16 @@ export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const yearStr = searchParams.get('year');
   const year = yearStr ? parseInt(yearStr, 10) : new Date().getFullYear();
+  const pageStr = searchParams.get('page');
+  const pageSizeStr = searchParams.get('pageSize');
 
   try {
-    const data = await getAllUserQuotas(year);
+    // `page` dikirim → paginasi di database (hanya user halaman itu yang dimuat).
+    const data = await getAllUserQuotas(year, {
+      page: pageStr ? parseInt(pageStr, 10) || 1 : undefined,
+      pageSize: pageSizeStr ? parseInt(pageSizeStr, 10) || 10 : undefined,
+      q: searchParams.get('q') ?? undefined,
+    });
     return NextResponse.json({ success: true, data });
   } catch (error: any) {
     return NextResponse.json(

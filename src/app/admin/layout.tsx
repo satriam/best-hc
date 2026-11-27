@@ -1,6 +1,6 @@
 import React from 'react';
 import { redirect } from 'next/navigation';
-import { getSession } from '@/lib/auth';
+import { getSession, getImpersonation } from '@/lib/auth';
 import { AppLayout } from '@/components/layout/AppLayout';
 
 export default async function AdminLayout({
@@ -18,5 +18,7 @@ export default async function AdminLayout({
     redirect('/dashboard');
   }
 
-  return <AppLayout user={session}>{children}</AppLayout>;
+  const impersonation = await getImpersonation();
+
+  return <AppLayout user={session} impersonatedBy={impersonation?.adminName}>{children}</AppLayout>;
 }

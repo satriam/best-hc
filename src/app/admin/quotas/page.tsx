@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
 import { Modal } from '@/components/ui/Modal';
 import { Input } from '@/components/ui/Input';
+import { Pagination } from '@/components/ui/Pagination';
 import {
   RefreshCw,
   RotateCcw,
@@ -16,6 +17,8 @@ import {
   AlertTriangle,
   Loader2,
   XCircle,
+  Search,
+  X,
 } from 'lucide-react';
 
 /** Mode input admin untuk satu baris kuota. */
@@ -218,6 +221,14 @@ export default function AdminQuotasPage() {
   const [leaveTypes, setLeaveTypes] = useState<LeaveTypeSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedYear, setSelectedYear] = useState<number>(new Date().getFullYear());
+  const [search, setSearch] = useState('');
+  /** Kata kunci yang benar-benar dikirim ke server (ditunda 350 ms setelah berhenti mengetik). */
+  const [query, setQuery] = useState('');
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(10);
+  const [pagination, setPagination] = useState({ page: 1, pageSize: 10, total: 0, totalPages: 1 });
+  /** Semua karyawan (dipakai sinkronisasi massal), dimuat saat dialog sinkronisasi dibuka. */
+  const [syncUsers, setSyncUsers] = useState<UserSummary[]>([]);
   const [toast, setToast] = useState<ToastState | null>(null);
 
   const [resetModalOpen, setResetModalOpen] = useState(false);
@@ -247,43 +258,33 @@ export default function AdminQuotasPage() {
     setLoading(true);
     setErrorMsg(null);
     try {
-      const [resQuotas, resUsers, resLeaveTypes] = await Promise.all([
-        fetch(`/api/quotas?year=${selectedYear}`),
-        fetch('/api/users'),
+      const params = new URLSearchParams({
+        year: String(selectedYear),
+        page: String(page),
+        pageSize: String(pageSize),
+      });
+      if (query) params.set('q', query);
+      const [resQuotas, resLeaveTypes] = await Promise.all([
+        fetch(`/api/quotas?${params.toString()}`),
         fetch('/api/leave-types'),
       ]);
 
       const textQuotas = await resQuotas.text();
       const jsonQuotas = textQuotas && textQuotas.trim().length > 0 ? JSON.parse(textQuotas) : {};
 
-      const textUsers = await resUsers.text();
-      const jsonUsers = textUsers && textUsers.trim().length > 0 ? JSON.parse(textUsers) : {};
-
       const textLeaveTypes = await resLeaveTypes.text();
       const jsonLeaveTypes =
         textLeaveTypes && textLeaveTypes.trim().length > 0 ? JSON.parse(textLeaveTypes) : {};
 
-      let userList: UserSummary[] = [];
-      if (
-        jsonQuotas.success &&
-        jsonQuotas.data &&
-        Array.isArray(jsonQuotas.data.users) &&
-        jsonQuotas.data.users.length > 0
-      ) {
-        userList = jsonQuotas.data.users;
-      } else if (jsonUsers.success && Array.isArray(jsonUsers.data)) {
-        userList = jsonUsers.data.map((u: UserSummary) => ({
-          id: u.id,
-          name: u.name,
-          email: u.email,
-          role: u.role,
-          gender: u.gender || 'MALE',
-        }));
+      if (!resQuotas.ok || !jsonQuotas.success) {
+        throw new Error(jsonQuotas.message || 'Gagal memuat data kuota');
       }
-
-      setUsers(userList);
-      if (jsonQuotas.success && jsonQuotas.data) {
-        setUserQuotas(jsonQuotas.data.userQuotas || []);
+      setUsers(Array.isArray(jsonQuotas.data?.users) ? jsonQuotas.data.users : []);
+      setUserQuotas(jsonQuotas.data?.userQuotas || []);
+      if (jsonQuotas.data?.pagination) {
+        setPagination(jsonQuotas.data.pagination);
+        // Halaman di luar jangkauan (mis. setelah data berkurang) -> server kirim halaman terakhir.
+        if (jsonQuotas.data.pagination.page !== page) setPage(jsonQuotas.data.pagination.page);
       }
       if (jsonLeaveTypes.success && Array.isArray(jsonLeaveTypes.data)) {
         setLeaveTypes(
@@ -301,7 +302,19 @@ export default function AdminQuotasPage() {
     } finally {
       setLoading(false);
     }
-  }, [selectedYear]);
+  }, [selectedYear, page, pageSize, query]);
+
+  // Tunda pencarian sampai user berhenti mengetik, lalu kembali ke halaman 1.
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      const next = search.trim();
+      if (next !== query) {
+        setQuery(next);
+        setPage(1);
+      }
+    }, 350);
+    return () => clearTimeout(timer);
+  }, [search, query]);
 
   useEffect(() => {
     let cancelled = false;
@@ -414,6 +427,7 @@ export default function AdminQuotasPage() {
       const res = await fetch(`/api/quotas?year=${year}`);
       const json = await res.json();
       const rows: UserLeaveQuotaItem[] = json?.data?.userQuotas ?? [];
+      setSyncUsers(Array.isArray(json?.data?.users) ? json.data.users : []);
       const nextIndex: Record<string, QuotaIndexEntry> = {};
       rows.forEach((quota) => {
         nextIndex[`${quota.user.email.trim().toLowerCase()}|${quota.leaveTypeId}`] = {
@@ -426,6 +440,7 @@ export default function AdminQuotasPage() {
       setSyncIndex(nextIndex);
     } catch {
       setSyncIndex({});
+      setSyncUsers([]);
     } finally {
       setSyncIndexLoading(false);
     }
@@ -445,8 +460,8 @@ export default function AdminQuotasPage() {
   };
 
   const syncPreview = useMemo(
-    () => parseSyncInput(syncText, syncMode, syncLeaveTypeId, syncIndex, users),
-    [syncText, syncMode, syncLeaveTypeId, syncIndex, users]
+    () => parseSyncInput(syncText, syncMode, syncLeaveTypeId, syncIndex, syncUsers),
+    [syncText, syncMode, syncLeaveTypeId, syncIndex, syncUsers]
   );
 
   const syncInvalidRows = syncPreview.filter((row) => row.errors.length > 0);
@@ -602,11 +617,42 @@ export default function AdminQuotasPage() {
         </div>
       </div>
 
+      {/* Pencarian karyawan */}
+      {(
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+          <div className="relative w-full sm:w-80">
+            <Search className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
+            <input
+              type="search"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Cari nama, email, atau NIP karyawan..."
+              aria-label="Cari karyawan"
+              data-testid="quota-search"
+              className="w-full h-9 pl-9 pr-8 text-xs rounded-lg border border-slate-300 bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+            />
+            {search && (
+              <button
+                type="button"
+                onClick={() => setSearch('')}
+                aria-label="Hapus pencarian"
+                className="absolute right-2 top-2 p-0.5 rounded text-slate-400 hover:text-slate-700"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            )}
+          </div>
+          <span className="text-xs text-slate-500">{pagination.total} karyawan</span>
+        </div>
+      )}
+
       {/* User Multi-Quota Cards */}
       {loading ? (
         <div className="py-12 text-center text-xs text-slate-400">Memuat data kuota karyawan...</div>
       ) : users.length === 0 ? (
-        <div className="py-12 text-center text-xs text-slate-400">Belum ada data karyawan.</div>
+        <div className="py-12 text-center text-xs text-slate-400">
+          {query ? <>Tidak ada karyawan yang cocok dengan &quot;{query}&quot;.</> : 'Belum ada data karyawan.'}
+        </div>
       ) : (
         <div className="space-y-6">
           {users.map((u) => {
@@ -716,6 +762,24 @@ export default function AdminQuotasPage() {
               </Card>
             );
           })}
+        </div>
+      )}
+
+      {/* Navigasi halaman — di tengah, paling bawah daftar */}
+      {!loading && pagination.total > 0 && (
+        <div className="pt-4 border-t border-slate-200" data-testid="quota-pagination">
+          <Pagination
+            page={pagination.page}
+            totalPages={pagination.totalPages}
+            total={pagination.total}
+            pageSize={pagination.pageSize}
+            onPageChange={setPage}
+            onPageSizeChange={(size) => {
+              setPageSize(size);
+              setPage(1);
+            }}
+            itemLabel="karyawan"
+          />
         </div>
       )}
 

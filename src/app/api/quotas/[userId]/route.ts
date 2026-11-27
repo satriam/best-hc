@@ -1,6 +1,6 @@
 import { NextResponse } from 'next/server';
 import { getSession } from '@/lib/auth';
-import { isApiError, normalizeError } from '@/lib/api-error';
+import { isApiError, isZodError, normalizeError, normalizeZodError } from '@/lib/api-error';
 import { getUserQuotas, updateUserQuotaByMode } from '@/services/quota.service';
 import { updateQuotaSchema } from '@/schemas/quota.schema';
 
@@ -76,6 +76,15 @@ export async function PUT(
       return NextResponse.json(
         { success: false, message: error.message, errors: error.details },
         { status: error.status }
+      );
+    }
+
+    // Body tidak sesuai skema → 422 (validasi), bukan 400.
+    if (isZodError(error)) {
+      const { message, issues } = normalizeZodError(error, 'Gagal memperbarui kuota');
+      return NextResponse.json(
+        { success: false, message, errors: issues },
+        { status: 422 }
       );
     }
 
